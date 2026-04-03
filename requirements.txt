@@ -1,0 +1,14 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+openai==1.82.0
+python-dotenv==1.1.0
+kokoro-onnx==0.5.0
+faster-whisper==1.2.1
+numpy>=2.0.2
+python-multipart==0.0.22
+
+# RVC voice conversion (Phase 6F) — install torch first:
+#   pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchaudio==2.5.1+cu121
+rvc-python==0.1.5

@@ -1,0 +1,20 @@
+{
+  "maid": {
+    "vrm": "SuiseiMaid.vrm",
+    "display_name": "Maid",
+    "enabled": true,
+    "tags": ["maid", "favorite", "elegant", "cute", "classic", "default", "cosplay", "pretty", "formal", "fancy", "dress"]
+  },
+  "casual": {
+    "vrm": "SuiseiCasual.vrm",
+    "display_name": "Casual",
+    "enabled": true,
+    "tags": ["casual", "comfy", "relaxed", "chill", "everyday", "cozy", "simple", "sailor", "hoodie", "sporty", "lazy", "home", "pajama"]
+  },
+  "idol": {
+    "vrm": "SuiseiIdol.vrm",
+    "display_name": "Idol",
+    "enabled": false,
+    "tags": ["idol", "stage", "performance", "sparkly", "concert", "shiny", "star", "singing", "live", "glowy"]
+  }
+}

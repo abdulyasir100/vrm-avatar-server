@@ -1,0 +1,60 @@
+{
+  "name": "habit",
+  "description": "Daily habit tracker with streaks",
+  "version": "1.0",
+  "enabled": true,
+  "tools": [
+    {
+      "name": "add_habit",
+      "description": "Add a new daily habit to track",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Habit name"}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "check_habits",
+      "description": "List all habits with today's status and streaks",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Empty or filter"}
+        }
+      }
+    },
+    {
+      "name": "complete_habit",
+      "description": "Mark a habit as done for today",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Habit name or ID"}
+        },
+        "required": ["arg"]
+      }
+    }
+  ],
+  "triggers": "(?:habit|streak|daily|routine|track(?:ing)?|did\\s+(?:my|the)|worked\\s+out|exercised|meditated|journaled|read(?:ing)?\\s+(?:a\\s+)?book)\\b|(?:check|show|list)\\s+(?:my\\s+)?(?:habits?|streaks?|routine)",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "background_check": {
+    "enabled": true,
+    "function": "check_incomplete",
+    "interval_seconds": 60
+  },
+  "telegram_commands": [
+    {"command": "habits", "description": "Show all habits + streaks", "function": "cmd_list"},
+    {"command": "habits.add", "description": "Add a habit", "function": "cmd_add"},
+    {"command": "habits.done", "description": "Mark habit done", "function": "cmd_done"},
+    {"command": "habits.remove", "description": "Remove a habit", "function": "cmd_remove"}
+  ]
+}

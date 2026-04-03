@@ -1,0 +1,46 @@
+{
+  "name": "spotify",
+  "description": "Play character songs on Spotify, control playback",
+  "version": "1.0",
+  "enabled": true,
+  "tools": [
+    {
+      "name": "play_song",
+      "description": "Play a song from the character's catalogue on Spotify",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Song name, or 'random' for shuffle"}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "check_spotify",
+      "description": "Show what's currently playing on Spotify",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Empty"}
+        }
+      }
+    }
+  ],
+  "triggers": "(?:play|sing|put on|queue|listen(?:ing)?\\s+to)\\s+.+|(?:what(?:'s| is) playing|now playing|current song|currently listening)|(?:pause|resume|skip|next|stop)\\s*(?:song|music|spotify)?|(?:spotify|music|song|lagu)",
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "telegram_commands": [
+    {"command": "spotify", "description": "Now playing + controls", "function": "cmd_now"},
+    {"command": "spotify.play", "description": "Play a song", "function": "cmd_play"},
+    {"command": "spotify.pause", "description": "Pause/resume", "function": "cmd_pause"},
+    {"command": "spotify.skip", "description": "Skip to next", "function": "cmd_skip"},
+    {"command": "spotify.catalog", "description": "Show character song list", "function": "cmd_catalog"},
+    {"command": "spotify.auth", "description": "Setup Spotify auth", "function": "cmd_auth"}
+  ],
+  "settings_schema": {
+    "spotify_client_id": {"type": "string", "description": "Spotify Client ID"},
+    "spotify_client_secret": {"type": "string", "description": "Spotify Client Secret"}
+  }
+}

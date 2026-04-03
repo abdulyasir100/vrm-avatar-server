@@ -1,0 +1,44 @@
+{
+  "name": "wishlist",
+  "description": "Shopping wishlist with prices and priority",
+  "version": "1.0",
+  "enabled": true,
+  "tools": [
+    {
+      "name": "add_wish",
+      "description": "Add an item to the wishlist with optional price",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "item name|price or just item name"}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "check_wishlist",
+      "description": "Show all wishlist items with prices",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Empty or filter"}
+        }
+      }
+    }
+  ],
+  "triggers": "(?:wish(?:list)?|want\\s+to\\s+buy|wanna\\s+buy|saving\\s+(?:up\\s+)?for|(?:add|put).*(?:wish|list|cart)|how\\s+much.*(?:wish|list|save))\\b",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "telegram_commands": [
+    {"command": "wishlist", "description": "Show wishlist", "function": "cmd_list"},
+    {"command": "wishlist.add", "description": "Add item: name|price", "function": "cmd_add"},
+    {"command": "wishlist.bought", "description": "Mark item as bought", "function": "cmd_bought"},
+    {"command": "wishlist.remove", "description": "Remove item", "function": "cmd_remove"}
+  ]
+}

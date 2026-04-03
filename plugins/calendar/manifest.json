@@ -1,0 +1,21 @@
+{
+  "name": "calendar",
+  "description": "Calendar events via Nextcloud CalDAV",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "check_calendar",
+      "description": "Check upcoming calendar events",
+      "parameters": {"type": "object", "properties": {}}
+    }
+  ],
+  "triggers": "(?:schedule|calendar|event|meeting|appointment|agenda|upcoming)\\b|what(?:'s| is) (?:on )?my (?:schedule|calendar)",
+  "telegram_commands": [
+    {"command": "calendar", "description": "Upcoming events", "function": "cmd_calendar"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {},
+  "hooks": {}
+}

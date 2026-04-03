@@ -1,0 +1,59 @@
+{
+  "name": "calorie",
+  "description": "Calorie and meal tracking with nutrition lookup",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "add_meal",
+      "description": "Log a meal with automatic calorie lookup",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "meal_type|food_name or meal_type|food_name|portion. Multiple comma-separated."}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "check_calories",
+      "description": "Check today's calorie intake and remaining budget",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "triggers": "(?:ate|eaten|eat|makan|sarapan|minum|drank|drink|drinking|had\\s+(?:some|a|an)\\s|breakfast|lunch|dinner|snack|calories?|kalori|calorie|food|meal)\\b|(?:how\\s+(?:many|much))\\s+(?:calories?|kcal)|(?:check|cek)\\s+(?:my\\s+)?(?:calories?|kalori|intake)",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "telegram_commands": [
+    {"command": "calories", "description": "Today's calorie intake", "function": "cmd_status"},
+    {"command": "meals", "description": "Today's meal list", "function": "cmd_meals"},
+    {"command": "calories.target", "description": "Set daily target", "function": "cmd_set_target"}
+  ],
+  "scheduled_actions": [
+    {
+      "name": "meal_reminder",
+      "description": "Remind to log lunch",
+      "time": "13:00",
+      "timezone": "Asia/Jakarta",
+      "function": "scheduled_lunch_reminder",
+      "enabled": false
+    }
+  ],
+  "settings_schema": {
+    "daily_target": {"type": "int", "default": 2000, "label": "Daily calorie target"}
+  },
+  "hooks": {
+    "on_wake": null,
+    "on_sleep": null
+  }
+}

@@ -1,0 +1,25 @@
+services:
+  avatar-server:
+    build: .
+    container_name: avatar-server
+    network_mode: host
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TTS_ENGINE=cosyvoice
+      - COSYVOICE_API_URL=http://100.83.33.113:9091
+      - LLM_PROVIDER=claude
+      - STT_ENABLED=true
+      - RVC_ENABLED=false
+      - HOME=/home/venomaru
+      - MEMORY_CONTEXT_HOURS=6
+      - MEMORY_CONTEXT_SOFT_CAP=100
+    volumes:
+      - ./data:/app/data
+      - ./audio:/app/audio
+      - ./models:/app/models
+      - ./prompts:/app/prompts
+      - ./character.json:/app/character.json:ro
+      # Claude CLI auth + sandbox
+      - /home/venomaru/.claude:/home/venomaru/.claude
+      - /home/venomaru/suisei-sandbox:/home/venomaru/suisei-sandbox

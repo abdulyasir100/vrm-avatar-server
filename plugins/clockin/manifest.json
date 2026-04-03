@@ -1,0 +1,27 @@
+{
+  "name": "clockin",
+  "description": "Auto clock-in/clock-out for work timesheet (Playwright)",
+  "version": "2.0",
+  "enabled": true,
+  "important": false,
+  "tools": [],
+  "triggers": null,
+  "background_task": {
+    "enabled": true,
+    "function": "background_tick",
+    "interval_seconds": 60,
+    "run_during_sleep": true
+  },
+  "telegram_commands": [
+    {"command": "clockin", "description": "Toggle clock-in on|off", "function": "cmd_clockin"},
+    {"command": "clockin.status", "description": "Today's schedule", "function": "cmd_status"},
+    {"command": "clockin.test", "description": "Test login + GPS (no clock-in)", "function": "cmd_test"}
+  ],
+  "scheduled_actions": [],
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "settings_schema": {},
+  "hooks": {}
+}

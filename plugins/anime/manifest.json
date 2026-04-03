@@ -1,0 +1,27 @@
+{
+  "name": "anime",
+  "description": "Find anime episodes and streaming links via cloudstream CLI",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "find_anime",
+      "description": "Find anime and get streaming URLs",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Anime title, or title|episode_number"}
+        },
+        "required": ["arg"]
+      }
+    }
+  ],
+  "triggers": "(?:anime|nonton|watch\\s+(?:anime|ep)|episode\\s+\\d|season\\s+\\d|frieren|solo.leveling|one.piece|naruto|jujutsu|demon.slayer|attack.on.titan|oshi\\s*no\\s*ko|dandadan|kaiju|blue.lock|spy.?family|sakamoto|mashle|undead.unluck)\\b",
+  "telegram_commands": [
+    {"command": "anime", "description": "Search anime", "function": "cmd_search"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {},
+  "hooks": {}
+}

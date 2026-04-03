@@ -1,0 +1,15 @@
+{
+  "name": "Your Character Name",
+  "nickname": ["nick", "shortname"],
+  "feed_keywords": ["keyword1", "keyword2"],
+  "description": "A brief description of who this character is.",
+  "personality": "Key personality traits, comma-separated.",
+  "scenario": "The setting and context for conversations.",
+  "first_message": "[NEUTRAL] Hello there.",
+  "example_messages": [
+    {"role": "user", "content": "Hi!"},
+    {"role": "assistant", "content": "[HAPPY] Hey! What's up?"}
+  ],
+  "tags": ["companion", "ai", "avatar"],
+  "system_prompt": ""
+}

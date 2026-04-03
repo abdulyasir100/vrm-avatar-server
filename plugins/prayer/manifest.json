@@ -1,0 +1,23 @@
+{
+  "name": "prayer",
+  "description": "Islamic prayer time reminders via Aladhan API",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [],
+  "triggers": null,
+  "background_task": {
+    "enabled": true,
+    "function": "background_tick",
+    "interval_seconds": 60,
+    "run_during_sleep": true
+  },
+  "telegram_commands": [
+    {"command": "prayer", "description": "Next prayer time", "function": "cmd_prayer"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {
+    "method": {"type": "int", "default": 20, "label": "Calculation method (Aladhan)"}
+  },
+  "hooks": {}
+}

@@ -1,0 +1,77 @@
+{
+  "name": "money",
+  "description": "Expense and income tracking with budget monitoring",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "add_expense",
+      "description": "Record one or more expenses",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "amount|description or multiple: 5000|snacks,10000|juice"}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "add_income",
+      "description": "Record income or money received",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "amount|description|category"}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "check_balance",
+      "description": "Check financial balance and spending status",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Optional filter"}
+        }
+      }
+    }
+  ],
+  "triggers": "(?:spent\\s.+\\s(?:on|buying|for)|bought|beli|bayar|gaji|got\\s+(?:paid|(?:my\\s+)?paycheck|bonus|thr)|(?:got|found)\\s+(?:random\\s+)?money|sell|sold|earned|salary|income|bonus)\\b|paid\\s+\\d|received\\s+\\d|(?:check|my|cek)\\s.*(?:balance|saldo|budget)|how\\smuch.*(?:spent?|have|left|money|spend)|record.*(?:spent|expense|income)|spent\\s+\\d+|earned\\s+\\d+|received\\s+\\d+",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "background_check": {
+    "enabled": true,
+    "function": "check_spending",
+    "interval_seconds": 60
+  },
+  "telegram_commands": [
+    {"command": "balance", "description": "Check balance & budget", "function": "cmd_balance"},
+    {"command": "expenses", "description": "Recent expenses", "function": "cmd_expenses"},
+    {"command": "balance.budget", "description": "Set monthly budget", "function": "cmd_set_budget"}
+  ],
+  "scheduled_actions": [
+    {
+      "name": "monthly_summary",
+      "description": "Monthly spending summary on the 1st",
+      "time": "09:00",
+      "timezone": "Asia/Jakarta",
+      "function": "scheduled_monthly",
+      "enabled": false
+    }
+  ],
+  "settings_schema": {
+    "monthly_budget": {"type": "int", "default": 0, "label": "Monthly budget (Rp)"}
+  },
+  "hooks": {
+    "on_wake": null,
+    "on_sleep": null
+  }
+}

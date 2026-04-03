@@ -1,0 +1,26 @@
+{
+  "name": "meme",
+  "description": "Indonesian political memes and catchphrases",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "get_political_meme",
+      "description": "Get a political meme or catchphrase",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Politician name or empty for random"}
+        }
+      }
+    }
+  ],
+  "triggers": "(?:jokowi|joko\\s*widodo|jacobi|prabowo|prabhu|prabow|gibran|gibron|megawati|luhut|anies|baswedan|natalius|pigai|dpr|parlemen|parliament|presiden\\s+(?:jokowi|prabowo)|menteri|politician|politik)\\b",
+  "telegram_commands": [
+    {"command": "meme", "description": "Random political meme", "function": "cmd_meme"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {},
+  "hooks": {}
+}

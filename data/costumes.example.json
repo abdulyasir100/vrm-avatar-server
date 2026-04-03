@@ -1,0 +1,20 @@
+{
+  "default": {
+    "vrm": "YourCharacterDefault.vrm",
+    "display_name": "Default",
+    "enabled": true,
+    "tags": ["default", "normal", "standard"]
+  },
+  "casual": {
+    "vrm": "YourCharacterCasual.vrm",
+    "display_name": "Casual",
+    "enabled": true,
+    "tags": ["casual", "comfy", "relaxed", "chill", "everyday"]
+  },
+  "formal": {
+    "vrm": "YourCharacterFormal.vrm",
+    "display_name": "Formal",
+    "enabled": false,
+    "tags": ["formal", "fancy", "elegant", "dress"]
+  }
+}

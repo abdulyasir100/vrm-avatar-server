@@ -1,0 +1,21 @@
+{
+  "name": "rss",
+  "description": "FreshRSS feed monitoring and character post detection",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [],
+  "triggers": null,
+  "background_task": {
+    "enabled": true,
+    "function": "background_tick",
+    "interval_seconds": 60,
+    "run_during_sleep": false
+  },
+  "telegram_commands": [
+    {"command": "rss", "description": "Recent headlines", "function": "cmd_headlines"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {},
+  "hooks": {}
+}

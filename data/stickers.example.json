@@ -1,0 +1,38 @@
+[
+  {
+    "id": "happy_1",
+    "file_id": "YOUR_TELEGRAM_STICKER_FILE_ID",
+    "emotion": "HAPPY",
+    "tags": ["happy", "smile", "yes", "good"]
+  },
+  {
+    "id": "angry_1",
+    "file_id": "YOUR_TELEGRAM_STICKER_FILE_ID",
+    "emotion": "ANGRY",
+    "tags": ["angry", "mad", "annoyed"]
+  },
+  {
+    "id": "sad_1",
+    "file_id": "YOUR_TELEGRAM_STICKER_FILE_ID",
+    "emotion": "SAD",
+    "tags": ["sad", "cry", "disappointed"]
+  },
+  {
+    "id": "surprised_1",
+    "file_id": "YOUR_TELEGRAM_STICKER_FILE_ID",
+    "emotion": "SURPRISED",
+    "tags": ["surprised", "wow", "shock"]
+  },
+  {
+    "id": "neutral_1",
+    "file_id": "YOUR_TELEGRAM_STICKER_FILE_ID",
+    "emotion": "NEUTRAL",
+    "tags": ["okay", "fine", "normal"]
+  },
+  {
+    "id": "sleep_1",
+    "file_id": "YOUR_TELEGRAM_STICKER_FILE_ID",
+    "emotion": "SLEEP",
+    "tags": ["sleep", "zzz", "night", "tired"]
+  }
+]

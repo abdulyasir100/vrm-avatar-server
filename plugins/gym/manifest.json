@@ -1,0 +1,59 @@
+{
+  "name": "gym",
+  "description": "Workout planner with exercise database, weekly plan, and daily reminders",
+  "version": "1.0",
+  "enabled": true,
+  "tools": [
+    {
+      "name": "check_workout",
+      "description": "Show today's workout plan or weekly schedule",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Empty for today, or 'week' for full schedule"}
+        }
+      }
+    },
+    {
+      "name": "complete_workout",
+      "description": "Mark today's workout as done",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Empty or notes"}
+        }
+      }
+    }
+  ],
+  "triggers": "(?:workout|gym|exercise|training|lift|push.?up|pull.?up|squat|plank|abs|chest\\s+day|leg\\s+day|arm\\s+day|cardio|stepper|dumbbell)\\b|(?:what|show).*(?:workout|exercise|training)|(?:did|done|finished).*(?:workout|exercise|training)",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "background_check": {
+    "enabled": true,
+    "function": "check_workout_reminder",
+    "interval_seconds": 60
+  },
+  "scheduled_actions": [
+    {
+      "name": "morning_workout",
+      "description": "Remind today's workout",
+      "time": "18:00",
+      "timezone": "Asia/Jakarta",
+      "function": "scheduled_morning",
+      "enabled": true
+    }
+  ],
+  "telegram_commands": [
+    {"command": "gym", "description": "Today's workout", "function": "cmd_today"},
+    {"command": "gym.week", "description": "Full weekly plan", "function": "cmd_week"},
+    {"command": "gym.done", "description": "Mark today done", "function": "cmd_done"},
+    {"command": "gym.setup", "description": "Setup workout plan (guided)", "function": "cmd_setup"},
+    {"command": "gym.reset", "description": "Delete plan and start over", "function": "cmd_reset"}
+  ]
+}
