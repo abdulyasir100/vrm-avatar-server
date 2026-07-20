@@ -1,0 +1,34 @@
+services:
+  avatar-server:
+    build: .
+    container_name: avatar-server
+    network_mode: host
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # TTS + LLM defaults — override in .env. TTS host URLs come from .env
+      # (OMNIVOICE_API_URL / COSYVOICE_API_URL); point them at your TTS server.
+      - TTS_ENGINE=omnivoice
+      - LLM_PROVIDER=claude
+      - STT_ENABLED=true
+      - RVC_ENABLED=false
+      - HOME=/home/user
+      - MEMORY_CONTEXT_HOURS=6
+      - MEMORY_CONTEXT_SOFT_CAP=100
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./audio:/app/audio
+      - ./models:/app/models
+      - ./prompts:/app/prompts
+      - ./character.json:/app/character.json:ro
+      # --- Optional mounts (uncomment only if you use these features) ---
+      # Claude CLI auth — needed when LLM_PROVIDER=claude (mounts your host
+      # Claude Code credentials in). Adjust the paths to your host user.
+      # - /home/user/.claude:/home/user/.claude
+      # - /home/user/.claude.json:/home/user/.claude.json
+      # Code-mode sandbox + docker-in-docker deploy (advanced). The docker.sock
+      # mount grants control of the host Docker daemon — enable only if you
+      # understand the implications.
+      # - /home/user/companion-sandbox:/home/user/companion-sandbox
+      # - /var/run/docker.sock:/var/run/docker.sock

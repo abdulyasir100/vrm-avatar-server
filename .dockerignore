@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+audio/
+models/rvc/
+logs/
+data/
+.env
+.git/
+hf-space/
+modal-tts/

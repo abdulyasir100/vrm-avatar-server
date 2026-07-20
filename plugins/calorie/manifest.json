@@ -1,0 +1,71 @@
+{
+  "name": "calorie",
+  "description": "Pre-decision food gatekeeping — the character approves or rejects intended meals based on today's calories vs target, then logs on approval",
+  "summary": "calorie tracking & meal approval",
+  "version": "2.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "check_meal",
+      "description": "Analyse an intended meal/drink against today's calorie totals and target. Logs automatically if the verdict is yes/warn. Caches the food for override_meal if the verdict is no.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "meal_type|food_name or meal_type|food_name|portion. Multiple comma-separated."}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "log_meal",
+      "description": "Log a meal the user has ALREADY eaten or is currently eating. Always counts it (no approval/rejection); flags it if it pushed them over today's target.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "meal_type|food_name or meal_type|food_name|portion. Multiple comma-separated."}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "override_meal",
+      "description": "Log the most recently rejected meal anyway, marking it as overruled. Use only when the user explicitly defies a NO verdict ('eating anyway', 'eating it regardless', 'fuck it I'm eating it').",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "check_calories",
+      "description": "Check today's calorie intake and remaining budget",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "triggers": "(?:gonna|going\\s+to|wanna|want\\s+to|planning\\s+to|thinking\\s+of|about\\s+to|should\\s+i)\\s+(?:eat|drink|have|grab|order|makan|minum)|(?:i'?m|im)\\s+(?:gonna|going|having|getting|grabbing|ordering)\\b|(?:eating|drinking|having)\\s+(?:anyway|regardless|it|this)\\b|fuck\\s+it[, ]+(?:i'?m\\s+)?(?:eating|drinking|having)|(?:just|already|barusan|baru|tadi|udah|sudah)\\s+(?:ate|had|eaten|finished|makan|minum)|i\\s+ate\\b|(?:i'?m|im|currently|lagi|sedang)\\s+(?:eating|drinking|munching|makan|minum)|calories?|kalori|kcal|how\\s+many\\s+calories|cek\\s+kalori|breakfast|lunch|dinner|snack",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "telegram_commands": [
+    {"command": "calories", "description": "Today's calorie intake", "function": "cmd_status"},
+    {"command": "meals", "description": "Today's meal list", "function": "cmd_meals"},
+    {"command": "calories.target", "description": "Set daily target", "function": "cmd_set_target"},
+    {"command": "calories.diet", "description": "View/set diet plan (factored into check_meal)", "function": "cmd_set_diet"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {
+    "daily_target": {"type": "int", "default": 2000, "label": "Daily calorie target"}
+  },
+  "hooks": {
+    "on_wake": null,
+    "on_sleep": null
+  }
+}

@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+.env
+models/
+audio/
+data/
+!data/costumes.json
+!data/stickers.json
+!data/costumes.example.json
+!data/stickers.example.json
+logs/
+
+plugins/*/data.db
+plugins/*/*.db

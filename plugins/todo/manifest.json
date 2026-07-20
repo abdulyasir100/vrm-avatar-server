@@ -1,0 +1,78 @@
+{
+  "name": "todo",
+  "description": "Task and todo management with reminders",
+  "summary": "tasks & reminders",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "add_task",
+      "description": "Add a new task or reminder",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Task title, optionally with |priority|category"}
+        },
+        "required": ["arg"]
+      }
+    },
+    {
+      "name": "list_tasks",
+      "description": "List pending or completed tasks",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Filter: empty=active, completed, all, high/medium/low, or category"}
+        }
+      }
+    },
+    {
+      "name": "complete_task",
+      "description": "Mark a task as done by partial title match",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Partial task title to match"}
+        },
+        "required": ["arg"]
+      }
+    }
+  ],
+  "triggers": "(?:add|new|create)\\s.*(?:tasks?|todo|to-do)|(?:my|the|show|check|what'?s on)\\s.*(?:tasks?|todo|to-do|list)|remind\\s(?:me\\s)?(?:to|at|in\\s)|(?:done\\swith|finished|completed|check\\soff)\\s",
+  "idle": {
+    "enabled": true,
+    "prompts_file": "idle.py"
+  },
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+  "background_check": {
+    "enabled": true,
+    "function": "check_reminders",
+    "interval_seconds": 60
+  },
+  "telegram_commands": [
+    {"command": "tasks", "description": "Show pending tasks", "function": "cmd_list"},
+    {"command": "tasks.add", "description": "Add a task", "function": "cmd_add"},
+    {"command": "tasks.done", "description": "Show completed", "function": "cmd_done"}
+  ],
+  "scheduled_actions": [
+    {
+      "name": "morning_tasks",
+      "description": "Remind pending tasks in the morning",
+      "time": "08:00",
+      "timezone": "",
+      "function": "scheduled_morning",
+      "enabled": false
+    }
+  ],
+  "settings_schema": {
+    "default_priority": {"type": "string", "default": "medium", "label": "Default task priority", "options": ["low", "medium", "high"]}
+  },
+  "hooks": {
+    "on_wake": null,
+    "on_sleep": null
+  }
+}

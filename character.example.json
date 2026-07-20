@@ -1,0 +1,25 @@
+{
+  "name": "Your Character Name",
+  "nickname": ["nick", "shortname"],
+  "feed_keywords": ["keyword1", "keyword2"],
+  "description": "A brief description of who this character is.",
+  "personality": "Key personality traits, comma-separated.",
+  "scenario": "The setting and context for conversations. Put character-, culture-, or routine-specific behavior here (religious observances, local customs, personal schedule) — not in prompts/system.md.",
+  "first_message": "[NEUTRAL] Hello there.",
+  "example_messages": [
+    {"role": "user", "content": "Hi!"},
+    {"role": "assistant", "content": "[HAPPY] Hey! What's up?"}
+  ],
+  "tags": ["companion", "ai", "avatar"],
+  "owner": {
+    "name": "the user",
+    "pronoun": "they"
+  },
+  "timezone": "",
+  "tz_label": "",
+  "language": "en",
+  "country": "",
+  "songs": [],
+  "song_aliases": {},
+  "system_prompt": ""
+}

@@ -1,0 +1,75 @@
+{
+  "_comment": "This is a template plugin. Copy this folder and rename to create a new plugin.",
+  "name": "example",
+  "description": "Example plugin template — copy and modify",
+  "version": "1.0",
+  "enabled": false,
+  "important": false,
+
+  "tools": [
+    {
+      "name": "example_tool",
+      "description": "What this tool does",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arg": {"type": "string", "description": "Tool argument description"}
+        },
+        "required": ["arg"]
+      }
+    }
+  ],
+
+  "triggers": "\\b(?:keyword1|keyword2|keyword3)\\b",
+
+  "idle": {
+    "enabled": false,
+    "prompts_file": "idle.py"
+  },
+
+  "storage": {
+    "type": "sqlite",
+    "file": "data.db"
+  },
+
+  "background_check": {
+    "_comment": "Returns data for the background loop to process. Does NOT run during sleep.",
+    "enabled": false,
+    "function": "check_something",
+    "interval_seconds": 60
+  },
+
+  "background_task": {
+    "_comment": "Runs its own logic (notifications, speech queue). Can run during sleep.",
+    "enabled": false,
+    "function": "background_tick",
+    "interval_seconds": 60,
+    "run_during_sleep": false
+  },
+
+  "telegram_commands": [
+    {"command": "example", "description": "Show example data", "function": "cmd_list"},
+    {"command": "example.add", "description": "Add example item", "function": "cmd_add"}
+  ],
+
+  "scheduled_actions": [
+    {
+      "name": "daily_report",
+      "description": "Run at a specific time daily",
+      "time": "09:00",
+      "timezone": "",
+      "function": "scheduled_daily",
+      "enabled": false
+    }
+  ],
+
+  "settings_schema": {
+    "some_setting": {"type": "string", "default": "value", "label": "Human-readable label"},
+    "some_number": {"type": "int", "default": 100, "label": "A number setting"}
+  },
+
+  "hooks": {
+    "on_wake": null,
+    "on_sleep": null
+  }
+}

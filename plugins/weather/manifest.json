@@ -1,0 +1,22 @@
+{
+  "name": "weather",
+  "description": "Weather forecast via Open-Meteo",
+  "summary": "weather forecast",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "tools": [
+    {
+      "name": "check_weather",
+      "description": "Check current weather and 3-day forecast",
+      "parameters": {"type": "object", "properties": {}}
+    }
+  ],
+  "triggers": "(?:weather|forecast|temperature|rain(?:ing|y)?|umbrella|sunny|cloudy|storm|thunder|cuaca|hujan|panas|dingin)\\b|how(?:'s| is) (?:it |the )?(?:outside|weather)",
+  "telegram_commands": [
+    {"command": "weather", "description": "Current weather", "function": "cmd_weather"}
+  ],
+  "scheduled_actions": [],
+  "settings_schema": {},
+  "hooks": {}
+}
