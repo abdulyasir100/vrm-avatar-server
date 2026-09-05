@@ -6,7 +6,6 @@ kokoro-onnx==0.5.0
 faster-whisper==1.2.1
 numpy>=2.0.2
 python-multipart==0.0.22
-notebooklm-py>=0.1.0
 tinytuya>=1.14.0
 curl_cffi>=0.7.0
 # Claude Agent SDK — native tool calling via in-process MCP server (CLAUDE_USE_SDK).
