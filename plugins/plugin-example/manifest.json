@@ -22,6 +22,8 @@
 
   "triggers": "\\b(?:keyword1|keyword2|keyword3)\\b",
 
+  "idle_categories": ["my_reminder"],
+
   "idle": {
     "enabled": false,
     "prompts_file": "idle.py"
@@ -55,9 +57,10 @@
   "scheduled_actions": [
     {
       "name": "daily_report",
-      "description": "Run at a specific time daily",
+      "description": "Run at a specific time. Omit \"days\" to fire every day. Add \"allow_code_mode\": true ONLY if the returned prompt must reach code mode (she writes code unattended); default is deny.",
       "time": "09:00",
-      "timezone": "",
+      "timezone": "Asia/Jakarta",
+      "days": ["mon", "thu"],
       "function": "scheduled_daily",
       "enabled": false
     }

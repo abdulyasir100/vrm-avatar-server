@@ -11,18 +11,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from services.claude_cli import query_claude_cli
+import config
+from services import brain, sleep
+from services import llm_json
 
 logger = logging.getLogger(__name__)
 
-_STATE_PATH = Path("data/user_state.json")
-_MEMORY_DB = "data/memory.db"
+_STATE_PATH = Path(config.USER_STATE_PATH)
+_MEMORY_DB = config.MEMORY_DB_PATH
 
 REFRESH_INTERVAL_SECONDS = 600   # 10 min idle refresh cadence
 HARD_MAX_AGE_SECONDS = 1800      # force refresh on read if older than this
@@ -59,16 +60,58 @@ def get_state() -> dict:
     return dict(_state)
 
 
+_JOURNAL_KIND = "user_state"
+_PEER_STATE_HOURS = 3  # how long another character's read of him stays worth mentioning
+_SIGNAL_KEYS = ("physical", "mental", "energy", "context")
+_last_shared: tuple | None = None
+
+
+def _is_default(state: dict) -> bool:
+    signal = (state.get("physical", "fit"), state.get("mental", "normal"), state.get("energy", "normal"))
+    return signal == ("fit", "normal", "normal")
+
+
+def _share(state: dict) -> None:
+    """Journal a changed, non-default state so the other characters see how he is doing."""
+    global _last_shared
+    signal = tuple(state.get(k) for k in _SIGNAL_KEYS)
+    if _is_default(state) or signal == _last_shared:
+        return
+    _last_shared = signal
+    brain.journal_log(_JOURNAL_KIND, json.dumps(dict(zip(_SIGNAL_KEYS, signal))))
+
+
+def _peer_state_block() -> str:
+    """What another character last noticed — he may have told them, not this one."""
+    for entry in brain.journal_from_others(_JOURNAL_KIND, _PEER_STATE_HOURS, limit=1):
+        try:
+            seen = json.loads(entry["content"])
+        except ValueError:
+            continue
+        return (
+            f"## User State seen by {entry['author']} ({brain.age_label(entry['age_minutes'])})\n"
+            f"Physical: {seen.get('physical')} | Mental: {seen.get('mental')} | Energy: {seen.get('energy')}\n"
+            f"Why: {seen.get('context', '')}\n"
+            f"He told {entry['author']}, not you — let it soften or sharpen your tone, and you may "
+            f"mention that {entry['author']} said so."
+        )
+    return ""
+
+
 def format_for_prompt() -> str:
-    """Build the system-prompt block describing current user state. Empty if
-    state is the default (no signal) so we don't bloat the prompt for nothing."""
+    """System-prompt block for the user's current state: this character's own read, plus
+    another character's recent one. Empty when there is no signal, to keep the prompt lean."""
+    return "\n\n".join(b for b in (_own_state_block(), _peer_state_block()) if b)
+
+
+def _own_state_block() -> str:
     if not _state.get("updated_at"):
         return ""
     physical = _state.get("physical", "fit")
     mental = _state.get("mental", "normal")
     energy = _state.get("energy", "normal")
     ctx = _state.get("context", "")
-    if physical == "fit" and mental == "normal" and energy == "normal":
+    if _is_default(_state):
         return ""
 
     age_min = int((time.time() - _state.get("updated_at", time.time())) / 60)
@@ -182,19 +225,8 @@ def _build_prompt(history: list[dict]) -> str:
     return _INSTRUCTION + "\n\nConversation excerpt:\n" + "\n".join(lines)
 
 
-_JSON_RE = re.compile(r"\{.*?\}", re.DOTALL)
-
-
-def _parse_response(text: str) -> dict | None:
-    if not text:
-        return None
-    match = _JSON_RE.search(text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
+def _normalize(data: dict) -> dict:
+    """The model's JSON object -> the state keys, missing ones defaulted."""
     out = {}
     for key, default in _DEFAULT_STATE.items():
         if key in {"updated_at", "expires_at"}:
@@ -215,21 +247,13 @@ async def derive_now() -> dict | None:
         _last_attempt_at = time.time()
         history = _recent_conversation()
         prompt = _build_prompt(history)
-        try:
-            text = await query_claude_cli(
-                messages=[{"role": "user", "content": prompt}],
-                model="haiku",
-                effort="low",
-                timeout=45,
-            )
-        except Exception as e:
-            logger.warning(f"[user_state] Claude CLI call failed: {e!r}")
+        # Claude CLI (haiku) when Claude is the provider, else the configured OpenAI-compatible
+        # model, then the fallback chain — so this works on any provider.
+        data = await llm_json.ask_json(None, prompt, timeout=45)
+        if not data:
+            logger.warning("[user_state] No parseable state from any LLM")
             return None
-
-        parsed = _parse_response(text or "")
-        if not parsed:
-            logger.warning(f"[user_state] Could not parse response: {text!r:.200}")
-            return None
+        parsed = _normalize(data)
 
         now = time.time()
         _state = {
@@ -239,6 +263,7 @@ async def derive_now() -> dict | None:
         }
         _dirty = False
         _save_to_disk()
+        await asyncio.to_thread(_share, _state)
         logger.info(
             f"[user_state] Updated: physical={_state['physical']} "
             f"mental={_state['mental']} energy={_state['energy']} "
@@ -263,11 +288,16 @@ async def refresh_loop() -> None:
             now = time.time()
             age = now - _state.get("updated_at", 0)
             elapsed_since_attempt = now - _last_attempt_at
-            should_refresh = (
-                age > HARD_MAX_AGE_SECONDS
-                or (_dirty and elapsed_since_attempt > MIN_REFRESH_GAP_SECONDS)
-                or age > REFRESH_INTERVAL_SECONDS
-            )
+            dirty_due = _dirty and elapsed_since_attempt > MIN_REFRESH_GAP_SECONDS
+            # Asleep: nothing new to read, so only a real chat (dirty) re-derives.
+            if sleep.is_sleeping():
+                should_refresh = dirty_due
+            else:
+                should_refresh = (
+                    dirty_due
+                    or age > HARD_MAX_AGE_SECONDS
+                    or age > REFRESH_INTERVAL_SECONDS
+                )
             if should_refresh:
                 await derive_now()
         except Exception as e:

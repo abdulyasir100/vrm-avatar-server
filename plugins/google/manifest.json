@@ -1,0 +1,33 @@
+{
+  "name": "google",
+  "description": "Gmail and Google Calendar — read freely in chat, send/create only after a Telegram confirmation",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "capability_note": "You can read the user's Gmail and Google Calendar when they ask. You can draft emails, replies and calendar events, but you cannot send or create them yourself: every draft waits for the user to tap a confirm button in Telegram. If Google is not connected, tell them to run /p.google.connect.",
+
+  "tools": [
+    {"name": "gmail_search", "description": "Search the user's Gmail. Uses Gmail search syntax. Empty = recent unread.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "Gmail query, e.g. 'from:boss newer_than:7d' or 'is:unread'"}}, "required": ["arg"]}},
+    {"name": "gmail_read", "description": "Read one email in full by its id (from gmail_search).",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "The message id"}}, "required": ["arg"]}},
+    {"name": "gmail_draft", "description": "Draft an email or a reply. It is NOT sent: the user confirms it with a button in Telegram.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "Pipe-separated: to|subject|body   or, to answer a mail, reply:<message id>|body"}}, "required": ["arg"]}},
+    {"name": "gcal_list", "description": "List upcoming Google Calendar events.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "How many days ahead, e.g. '7'"}}, "required": ["arg"]}},
+    {"name": "gcal_draft_event", "description": "Draft a Google Calendar event. It is NOT created: the user confirms it with a button in Telegram.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "Pipe-separated: summary|start|end|location. start/end are ISO 8601 with offset, e.g. 2026-09-21T14:00:00+07:00"}}, "required": ["arg"]}}
+  ],
+
+  "triggers": "\b(?:e-?mails?|gmail|inbox|mailbox|unread|reply to|google calendar|gcal)\b",
+
+  "storage": {"type": "sqlite", "file": "data.db"},
+
+  "telegram_commands": [
+    {"command": "google", "description": "Google connection status", "function": "cmd_status"},
+    {"command": "google.connect", "description": "Sign in to Google (step 1: get the link)", "function": "cmd_connect"},
+    {"command": "google.code", "description": "Sign in to Google (step 2: paste the localhost address)", "function": "cmd_code"},
+    {"command": "google.outbox", "description": "Emails/events waiting for your confirmation", "function": "cmd_outbox"},
+    {"command": "google.disconnect", "description": "Sign out and revoke the token", "function": "cmd_disconnect"}
+  ]
+}

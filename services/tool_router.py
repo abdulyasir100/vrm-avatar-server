@@ -19,7 +19,7 @@ def register_route(pattern: str, tool_names: list[str], requires_intent: bool = 
     """Register a keyword pattern that activates specific tool docs.
 
     If requires_intent=True, the message must also have an intent prefix
-    (e.g. 'sui-chan', 'please', 'add', 'check') for the route to match.
+    (e.g. a character nickname, 'please', 'add', 'check') for the route to match.
     Used by plugins to avoid triggering on casual conversation.
     """
     _routes.append((re.compile(pattern, re.IGNORECASE), tool_names, requires_intent))
@@ -112,9 +112,7 @@ def setup_default_routes() -> None:
         ["save_memory", "update_memory", "delete_memory"],
     )
 
-    # Task tools moved to plugins/todo/ — loaded by plugin_loader
-
-    # Weather, Calendar, Money, Meme, Calorie, Anime moved to plugins/ — loaded by plugin_loader
+    # Plugin tools (todo, money, calorie, weather, ...) register via register_plugin_routes()
 
     # Lucky draw tools (gacha, roulette, THR) — main features, stay here
     register_route(

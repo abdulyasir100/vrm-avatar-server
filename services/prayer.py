@@ -7,11 +7,10 @@ Location is auto-detected via IP geolocation on first fetch, with config values 
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
-
-from utils import time as ltime
+from datetime import datetime
 import httpx
 from services.geolocation import get_location
+from utils import time as ltime
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +24,25 @@ REMINDER_OFFSETS = [5]
 
 
 def _today_wib() -> str:
-    return ltime.now().strftime("%Y-%m-%d")
+    """Local date (configured timezone). Name kept for existing callers."""
+    return ltime.today_str()
 
 
 def _now_wib() -> datetime:
+    """Local now (configured timezone). Name kept for existing callers."""
     return ltime.now()
+
+
+def _method() -> int:
+    """The Aladhan calculation method setting. Falls back to 20 (Kemenag, Indonesia)
+    if the prayer plugin folder is absent, so a stripped-down instance doesn't crash
+    prayer time lookups on a KeyError."""
+    from services import plugin_loader  # lazy: prayer is imported by routers before plugins load
+
+    try:
+        return plugin_loader.get_setting("prayer", "method")
+    except KeyError:
+        return 20
 
 
 async def fetch_prayer_times() -> dict | None:
@@ -48,7 +61,7 @@ async def fetch_prayer_times() -> dict | None:
                 params={
                     "latitude": geo["lat"],
                     "longitude": geo["lon"],
-                    "method": 20,
+                    "method": _method(),
                 },
             )
             resp.raise_for_status()

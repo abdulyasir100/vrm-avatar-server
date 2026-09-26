@@ -1,7 +1,12 @@
-"""Telegram push notification service — best-effort delivery to user's phone.
+"""Push notification service — best-effort delivery to the user's phone.
 
-Sends messages directly via Telegram Bot API. Replaces Ntfy.
+Telegram is the primary path (Bot API), because only it supports the richer
+features the plugins rely on: pinning a message and sending stickers by file_id.
 Rate-limited to avoid hitting Telegram's per-chat flood limits.
+
+notify() additionally mirrors the plain text to any config.APPRISE_URLS targets
+(Discord, desktop, ntfy, ...). That fan-out is best-effort and never affects the
+Telegram result, so an empty/broken Apprise config changes nothing.
 """
 
 import asyncio
@@ -22,6 +27,12 @@ _last_send_time: float = 0.0
 _send_lock = asyncio.Lock()
 
 
+def _redact(url: str) -> str:
+    """Keep only the scheme — the rest of an Apprise URL is credentials."""
+    scheme, sep, _ = url.partition("://")
+    return f"{scheme}://..." if sep else "<malformed url>"
+
+
 async def _rate_limit():
     """Wait if needed to respect minimum interval between sends."""
     global _last_send_time
@@ -33,15 +44,52 @@ async def _rate_limit():
         _last_send_time = time.monotonic()
 
 
+async def _fanout(title: str, message: str) -> None:
+    """Mirror a notification to the configured Apprise targets. Never raises.
+
+    Runs in a worker thread: Apprise's notify() is synchronous and would
+    otherwise block the event loop for the length of every HTTP call.
+    """
+    urls = config.APPRISE_URLS
+    if not config.APPRISE_ENABLED or not urls:
+        return
+    try:
+        import apprise
+
+        def _send() -> bool:
+            ap = apprise.Apprise()
+            for url in urls:
+                if not ap.add(url):
+                    logger.warning("[apprise] Unusable target, skipped: %s", _redact(url))
+            return bool(ap) and ap.notify(title=title or "", body=message)
+
+        if not await asyncio.to_thread(_send):
+            logger.warning("[apprise] Fan-out reported failure for %d target(s)", len(urls))
+    except Exception as e:
+        logger.warning(f"[apprise] Fan-out failed: {repr(e)}")
+
+
 async def notify(
     title: str,
     message: str,
     priority: int = 3,
     tags: list[str] | None = None,
-) -> bool:
-    """Push a notification via Telegram. Never raises — returns True/False."""
+    inline_keyboard: list[list[dict]] | None = None,
+) -> int | None:
+    """Push a notification. Never raises.
+
+    inline_keyboard: Telegram button rows ([[{"text", "callback_data"}]]). Presses come back
+    through the bot as plugin callbacks (callback_data "plugin:<name>:<action>:<id>") — the way
+    for a tool to ask for a confirmation that only a human tap can give.
+
+    Returns the Telegram message_id on success (callers pass it to pin_message),
+    or None if Telegram is disabled or the send failed. The Apprise fan-out is
+    fire-and-forget and never changes this return value.
+    """
+    await _fanout(title, message)
+
     if not config.TELEGRAM_NOTIFY_ENABLED:
-        return False
+        return None
 
     # Only show title if it's not just the character name (avoid redundant bot name prefix)
     if title and title != config.CHARACTER_NAME:
@@ -55,6 +103,8 @@ async def notify(
         "text": text,
         "parse_mode": "Markdown",
     }
+    if inline_keyboard:
+        payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
 
     try:
         await _rate_limit()
@@ -121,6 +171,26 @@ async def send_sticker(file_id: str) -> bool:
             logger.warning(f"[telegram_sticker] POST returned {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
         logger.warning(f"[telegram_sticker] Failed: {e}")
+    return False
+
+
+async def send_file(data: bytes, filename: str, caption: str = "") -> bool:
+    """Send a file to the chat: images as a photo, anything else as a document. Never raises."""
+    if not config.TELEGRAM_NOTIFY_ENABLED or not data:
+        return False
+    is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    method, field = ("sendPhoto", "photo") if is_image else ("sendDocument", "document")
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/{method}"
+    try:
+        await _rate_limit()
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, data={"chat_id": config.TELEGRAM_CHAT_ID, "caption": caption[:1000]},
+                                     files={field: (filename, data)})
+            if resp.status_code == 200:
+                return True
+            logger.warning(f"[telegram_file] {method} returned {resp.status_code}: {resp.text[:100]}")
+    except Exception as e:
+        logger.warning(f"[telegram_file] Failed: {e}")
     return False
 
 

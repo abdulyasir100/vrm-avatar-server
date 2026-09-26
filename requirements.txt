@@ -11,3 +11,5 @@
 #
 #   pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 rvc-python==0.1.5 \
 #     --index-url https://download.pytorch.org/whl/cu121
+# Multi-target notification fan-out (Discord, desktop, ntfy, ...). See services/ntfy.py.
+apprise>=1.9.0

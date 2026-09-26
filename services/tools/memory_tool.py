@@ -35,6 +35,16 @@ async def handle_save_memory(arg: str, context: dict[str, Any]) -> dict[str, Any
             "side_effects": [],
         }
 
+    # A daily number is a log entry, not something to remember forever: 57 step counts
+    # once rode along in every prompt. Acknowledge it, store nothing.
+    if memory.is_daily_stat_memory(content):
+        logger.info(f"[memory_tool] Daily stat not stored: {content}")
+        return {
+            "ok": True,
+            "result": "Noted for today. Daily numbers like step counts are not kept as permanent memories.",
+            "side_effects": [],
+        }
+
     mem_id = memory.add_core_memory(category, content, source="llm")
     logger.info(f"[memory_tool] Saved core memory #{mem_id} [{category}]: {content}")
 

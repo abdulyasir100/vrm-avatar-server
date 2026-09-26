@@ -11,7 +11,6 @@ import logging
 import time
 import random
 from collections import deque
-import httpx
 from services import llm, tts_service, memory, weather, ntfy, freshrss, calendar_service, prayer, sleep, mood, sticker, plugin_loader
 from services.ws_manager import manager
 from services.message_queue import QueueItem, enqueue
@@ -32,13 +31,17 @@ _last_summarized_at: float = 0.0
 # only carries the last 10 messages of any kind, which gets evicted by normal
 # chat between two smart-idle calls 12+ hours apart.
 _smart_idle_history: deque[dict] = deque(maxlen=30)
+
+# Weight of the tool/plugin idle category (others: smart 0.20, memory 0.25, random 0.05).
+# Runtime setting `idle_tool_chance` (services/settings_registry.py).
+IDLE_TOOL_CHANCE = 0.30
 _SMART_IDLE_DEDUP_HOURS = 24.0
 
 def _build_idle_random_prompt() -> str:
     """Build a dynamic idle talk prompt with real-time context for the LLM to decide what to say."""
-    now_wib = ltime.now()
-    time_str = now_wib.strftime("%H:%M")
-    hour = now_wib.hour
+    now_local = ltime.now()
+    time_str = ltime.fmt_time(now_local)
+    hour = now_local.hour
 
     if hour < 6:
         time_of_day = "late night / very early morning"
@@ -58,7 +61,7 @@ def _build_idle_random_prompt() -> str:
     idle_minutes = int((time.time() - _last_user_interaction) / 60) if _last_user_interaction else 0
 
     return (
-        f"It's {ltime.fmt_time(now_wib, '%H:%M')} ({time_of_day}). "
+        f"It's {time_str} ({time_of_day}). "
         f"Your user has been quiet for about {idle_minutes} minutes. "
         "Say something unprompted and in-character. You decide what — "
         "it could be anything: a random thought, teasing the user, "
@@ -77,7 +80,7 @@ def _build_memory_idle_prompt() -> str | None:
     """
     # 60/40 roll for source
     if random.random() < 0.60:
-        mems = memory.get_recent_core_memories(limit=15)
+        mems = memory.get_recent_core_memories(limit=15, exclude_daily_stats=True)
         if mems:
             pick = random.choice(mems)
             return (
@@ -96,7 +99,7 @@ def _build_memory_idle_prompt() -> str | None:
             f"ONE sentence. Prefix with an emotion tag."
         )
     # Final fallback: any core memory if we haven't tried it yet
-    mems = memory.get_recent_core_memories(limit=15)
+    mems = memory.get_recent_core_memories(limit=15, exclude_daily_stats=True)
     if mems:
         pick = random.choice(mems)
         return (
@@ -151,14 +154,14 @@ def _pick_fresh_topic() -> str | None:
     return topic
 
 # Persist daily dedup state across restarts
-_DAILY_STATE_PATH = "data/background_daily.json"
+_DAILY_STATE_PATH = config.BACKGROUND_DAILY_STATE_PATH
 
 def _load_daily_state():
     """Load persisted daily dedup state from disk. Resets if date changed."""
     global _scheduled_fired_today, _check_fired_today
     import json
     from pathlib import Path
-    today = ltime.now().strftime("%Y-%m-%d")
+    today = ltime.today_str()
     try:
         state = json.loads(Path(_DAILY_STATE_PATH).read_text())
         # Reset if saved date != today
@@ -176,7 +179,7 @@ def _save_daily_state():
     """Persist daily dedup state to disk."""
     import json
     from pathlib import Path
-    today = ltime.now().strftime("%Y-%m-%d")
+    today = ltime.today_str()
     try:
         Path(_DAILY_STATE_PATH).parent.mkdir(parents=True, exist_ok=True)
         Path(_DAILY_STATE_PATH).write_text(json.dumps({
@@ -194,10 +197,11 @@ def reset_idle_timer():
     _last_user_interaction = time.time()
 
 
-async def _speak(prompt: str, context: str):
+async def _speak(prompt: str, context: str, allow_code_mode: bool = False):
     """Run a prompt through LLM → TTS → WebSocket broadcast.
 
     This is called by the queue worker — never concurrently.
+    allow_code_mode comes only from a scheduled_action's manifest flag.
     """
     lm_status = await llm.check_llm()
     if lm_status != "ok":
@@ -205,15 +209,15 @@ async def _speak(prompt: str, context: str):
         return
 
     # Time awareness: prepend current local time so she can reference it naturally
-    now_wib = ltime.now()
-    time_prefix = f"[Current time: {ltime.fmt_time(now_wib, '%A %H:%M')}]\n"
+    time_prefix = f"[Current time: {ltime.fmt_time(fmt='%A %H:%M')}]\n"
 
     # Anti-repetition: inject last 10 assistant utterances so she doesn't repeat herself
     recent_block = memory.format_recent_assistant_for_prompt(limit=10)
 
     full_prompt = time_prefix + prompt + (("\n" + recent_block) if recent_block else "")
 
-    result = await llm.chat(message=full_prompt, context=context, user_name="System", is_system_prompt=True)
+    result = await llm.chat(message=full_prompt, context=context, user_name="System", is_system_prompt=True,
+                            allow_code_mode=allow_code_mode)
 
     reply = result.get("reply", "")
     emotion = result.get("emotion", config.DEFAULT_EMOTION)
@@ -273,18 +277,21 @@ async def _check_reminders():
                 # Plugins return either:
                 #   - a single dict with "prompt" key (gym, habit, etc.)
                 #   - a list of dicts with "task_id" key (todo reminders)
-                #   - a list of dicts with "prompt" key (money spending nags)
+                #   - a list of dicts with "prompt" key, optionally "context" and a
+                #     "notify" push payload (money spending nags)
                 if isinstance(result, dict):
                     result = [result]
                 for item in result:
                     if isinstance(item, dict) and "prompt" in item and "task_id" not in item:
                         # Prompt-based plugin check — once per day per type
-                        today = ltime.now().strftime("%Y-%m-%d")
+                        today = ltime.today_str()
                         key = f"{plugin_name}-{item.get('type', 'check')}"
                         if _check_fired_today.get(key) == today:
                             continue
                         _check_fired_today[key] = today
                         _save_daily_state()
+                        if item.get("notify"):
+                            await ntfy.notify(**item["notify"])
                         prompt = item["prompt"]
                         ctx = item.get("context", f"{plugin_name}_check")
                         await enqueue(QueueItem(
@@ -333,7 +340,7 @@ async def _check_reminders():
 
 
 async def _fetch_idle_tool_prompt() -> str | None:
-    """Fetch real data from task/money manager and build a contextual idle prompt.
+    """Gather plugin + service data and build a contextual idle prompt.
 
     Returns None if no services are reachable or no interesting data found.
     """
@@ -346,15 +353,12 @@ async def _fetch_idle_tool_prompt() -> str | None:
     except Exception:
         pass
 
-    # Task, money, and calorie idle prompts all come from their plugins via
-    # get_plugin_idle_prompts() above — no engine-side per-plugin fallback.
-
     if config.NEXTCLOUD_ENABLED:
         try:
             events = await calendar_service.fetch_upcoming_events(hours_ahead=24)
             if events:
                 evt = events[0]
-                time_str = ltime.fmt_time(evt["start"].astimezone(ltime.get_tz()), "%H:%M")
+                time_str = ltime.fmt_time(evt["start"].astimezone(ltime.get_tz()))
                 prompts.append(_IDLE_CALENDAR.format(title=evt["title"], time=time_str))
         except Exception:
             pass
@@ -364,7 +368,8 @@ async def _fetch_idle_tool_prompt() -> str | None:
         if times:
             name, time_str, minutes = prayer.get_next_prayer(times["timings"])
             if name and minutes is not None and 0 < minutes <= 15:
-                prompts.append(_IDLE_PRAYER.format(name=name, time=time_str, minutes=minutes))
+                prompts.append(_IDLE_PRAYER.format(
+                    name=name, time=f"{time_str} {ltime.tz_label()}".rstrip(), minutes=minutes))
     except Exception:
         pass
 
@@ -452,7 +457,7 @@ async def _check_calendar_reminders_silent():
     except Exception:
         return
 
-    from datetime import timezone
+    from datetime import timezone, timedelta
     now_utc = __import__("datetime").datetime.now(timezone.utc)
 
     for evt in events:
@@ -475,18 +480,18 @@ async def _check_calendar_reminders_silent():
 
 
 async def _check_session_summary():
-    """Auto-summarize conversation when idle for 30+ min and there are unsummarized messages."""
+    """Auto-summarize the conversation after SUMMARY_IDLE_MINUTES idle with unsummarized messages."""
     global _last_summarized_at
 
     if _last_user_interaction == 0.0:
         return
 
     idle_minutes = (time.time() - _last_user_interaction) / 60
-    if idle_minutes < 30:
+    if idle_minutes < config.SUMMARY_IDLE_MINUTES:
         return
 
-    # Don't re-summarize within 30 min
-    if time.time() - _last_summarized_at < 1800:
+    # Don't re-summarize too soon
+    if time.time() - _last_summarized_at < config.SUMMARY_MIN_GAP_SECONDS:
         return
 
     unsummarized = memory.get_unsummarized_messages()
@@ -500,7 +505,7 @@ async def _check_session_summary():
     for msg in unsummarized:
         role = "User" if msg["role"] == "user" else config.CHARACTER_NAME
         transcript_lines.append(f"{role}: {msg['content']}")
-    transcript = "\n".join(transcript_lines[-40:])  # cap at last 40 messages
+    transcript = "\n".join(transcript_lines[-config.SUMMARY_MAX_MESSAGES:])
 
     summary_prompt = (
         "Summarize this conversation in 2-3 sentences. "
@@ -574,8 +579,7 @@ async def _smart_idle_speak(topic: str):
     system_prompt = llm.get_system_prompt()
 
     # Time + anti-repetition injection (mirrors _speak)
-    now_wib = ltime.now()
-    time_prefix = f"[Current time: {ltime.fmt_time(now_wib, '%A %H:%M')}]\n"
+    time_prefix = f"[Current time: {ltime.fmt_time(fmt='%A %H:%M')}]\n"
     recent_block = memory.format_recent_assistant_for_prompt(limit=10)
 
     # Smart-idle-specific dedup over 24h — stops "HoloEN concert"
@@ -678,7 +682,7 @@ async def _check_idle():
     if smart_enabled and not _idle_on_cooldown("smart"):
         candidates.append(("smart", 0.20))
     if not _idle_on_cooldown("tool"):
-        candidates.append(("tool", 0.30))
+        candidates.append(("tool", IDLE_TOOL_CHANCE))
     if not _idle_on_cooldown("memory"):
         candidates.append(("memory", 0.25))
     if not _idle_on_cooldown("random"):
@@ -689,7 +693,7 @@ async def _check_idle():
         _idle_recent.clear()
         if smart_enabled:
             candidates.append(("smart", 0.20))
-        candidates.append(("tool", 0.30))
+        candidates.append(("tool", IDLE_TOOL_CHANCE))
         candidates.append(("memory", 0.25))
         candidates.append(("random", 0.05))
 
@@ -757,6 +761,41 @@ async def _check_idle():
         ))
 
 
+def _day_matches(days, now) -> bool:
+    """Whether a scheduled_action's optional `days` weekday filter allows `now`.
+
+    days: None/empty -> every day. Otherwise a list like ["sun"], ["mon","thu"]
+    or ["Monday"] — case-insensitive, matched on the 3-letter prefix.
+    """
+    if not days:
+        return True
+    return now.strftime("%a").lower() in {str(d).lower()[:3] for d in days}
+
+
+def _action_local_now(action: dict, now_utc=None):
+    """The current time in a scheduled action's timezone.
+
+    `timezone` is an IANA name; empty/absent (or unknown) means the configured
+    local timezone (utils.time).
+    """
+    from datetime import datetime, timezone
+    tz = ltime.get_tz()
+    tz_name = (action.get("timezone") or "").strip()
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            logger.warning(f"[background] Unknown action timezone {tz_name!r}, using local")
+    return (now_utc or datetime.now(timezone.utc)).astimezone(tz)
+
+
+def _action_due(action: dict, local_now) -> bool:
+    """Is a scheduled action due at `local_now` (weekday filter + HH:MM match)?"""
+    return (_day_matches(action.get("days"), local_now)
+            and local_now.strftime("%H:%M") == action.get("time"))
+
+
 async def _check_scheduled_actions():
     """Check plugin scheduled_actions and fire them at the configured time (once per day)."""
     plugins = plugin_loader.get_enabled_plugins()
@@ -771,30 +810,20 @@ async def _check_scheduled_actions():
 
             fn_name = action.get("function")
             target_time = action.get("time")  # "HH:MM"
-            tz_name = action.get("timezone", "")  # empty → use the configured local tz
 
             if not fn_name or not target_time:
                 continue
 
-            # Resolve the action's timezone (falls back to the configured local tz)
-            tz = ltime.get_tz()
-            if tz_name:
-                try:
-                    from zoneinfo import ZoneInfo
-                    tz = ZoneInfo(tz_name)
-                except Exception:
-                    pass
-            now = __import__("datetime").datetime.now(tz)
+            now = _action_local_now(action)
             today = now.strftime("%Y-%m-%d")
-            current_time = now.strftime("%H:%M")
+
+            # Weekday filter (absent = every day) + HH:MM match (1-minute window).
+            if not _action_due(action, now):
+                continue
 
             # Dedup: only fire once per day per action
             key = f"{name}:{action['name']}"
             if _scheduled_fired_today.get(key) == today:
-                continue
-
-            # Check if current time matches (within 1 minute window)
-            if current_time != target_time:
                 continue
 
             _scheduled_fired_today[key] = today
@@ -808,7 +837,9 @@ async def _check_scheduled_actions():
                     if isinstance(result, str) and result:
                         await enqueue(QueueItem(
                             type="scheduled",
-                            handler=lambda p=result: _speak(p, f"scheduled_{name}"),
+                            # Defaults bind now: the queue runs this after the loop has moved on.
+                            handler=lambda p=result, ctx=f"scheduled_{name}", code=bool(action.get("allow_code_mode")):
+                                _speak(p, ctx, allow_code_mode=code),
                             label=f"scheduled: {name}/{action['name']}",
                         ))
                     logger.info(f"[background] Scheduled action fired: {name}/{action['name']}")
@@ -816,7 +847,7 @@ async def _check_scheduled_actions():
                     logger.error(f"[background] Scheduled action {name}/{action['name']} failed: {e}")
 
     # Clean old dates from tracking
-    today = ltime.now().strftime("%Y-%m-%d")
+    today = ltime.today_str()
     for key in list(_scheduled_fired_today):
         if _scheduled_fired_today[key] != today:
             del _scheduled_fired_today[key]
@@ -882,7 +913,6 @@ async def _main_loop():
             await _check_reminders()
             await _check_calendar_reminders()
             # Prayer + RSS moved to plugins (background_task)
-            # Spending/calorie/task nags come from their plugins via background_check/idle
             await _check_scheduled_actions()
             await _check_idle()
 

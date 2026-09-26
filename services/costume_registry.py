@@ -9,13 +9,15 @@ import logging
 import random
 from pathlib import Path
 
+import config
+
 logger = logging.getLogger(__name__)
 
 _costumes: dict[str, dict] = {}  # costume_id -> {vrm, display_name, enabled, tags}
 _current_costume: str = "maid"
 
 
-def load(path: str = "data/costumes.json") -> None:
+def load(path: str = config.COSTUMES_PATH) -> None:
     """Load costume definitions from JSON (falls back to *.example.json)."""
     global _costumes
     p = Path(path)

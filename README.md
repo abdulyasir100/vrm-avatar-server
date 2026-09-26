@@ -87,9 +87,17 @@ Each plugin has:
 
 Copy `plugins/plugin-example/` to build a new one.
 
-This repo ships the framework plus a few demo plugins — **`weather`, `todo`, `calorie`**
-— and the `plugin-example` template. More plugins are available from the plugin
-marketplace (browse, download the folder, drop it into `plugins/`, restart).
+This repo ships the framework plus two base plugins — **`google`** (Gmail + Calendar,
+needs your own OAuth client) and **`notion`** (needs a Notion integration token) — and
+the `plugin-example` template. Everything else (todo, money, calorie, weather, cook,
+worktrack, …) comes from the plugin marketplace at https://avatar-plugins.venomaru.dev/
+(download the folder, drop it into `plugins/`, restart).
+
+### Settings page
+
+Open `http://<host>:8800/settings` to change settings, switch plugins on/off and edit
+each plugin's settings (saved per instance, under `DATA_DIR`). Set `ADMIN_KEY` in `.env`
+first — the page asks for it once per browser.
 
 ### Main features (Unity-connected)
 
@@ -105,7 +113,9 @@ are always on — they are not plugins.
 | `POST` | `/tts` | TTS only |
 | `POST` | `/transcribe` | Speech-to-text |
 | `WS` | `/ws` | WebSocket to the avatar client |
+| `GET` | `/settings` | Settings page (plugins tab included) |
 | `GET` | `/plugin/list` | List loaded plugins + commands |
+| `GET` | `/plugin/all` | Every plugin with on/off state + settings |
 | `POST` | `/plugin/command` | Run a plugin Telegram command |
 | `POST` | `/plugin/callback` | Handle inline-button callbacks |
 | `GET` | `/status` | Health check |
@@ -122,7 +132,7 @@ avatar-server/
 │   └── system.md           # System rules (response format, emotion tags) — tokenized
 ├── utils/time.py           # Timezone helper (single source of local time)
 ├── plugins/                # Modular plugins — delete any freely
-│   ├── weather/  todo/  calorie/   # demo plugins
+│   ├── google/  notion/    # base plugins
 │   └── plugin-example/     # template for new plugins
 ├── routers/                # API endpoints
 ├── services/               # Core services (LLM, TTS, memory, mood, plugin loader, …)

@@ -1,13 +1,15 @@
 """Memory management endpoints — view/add/delete core memories."""
 
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 from services import memory
+from services.auth import require_key
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/memory", tags=["memory"])
+# Core memories and full chat history: same secret as /admin.
+router = APIRouter(prefix="/memory", tags=["memory"], dependencies=[Depends(require_key("ADMIN_KEY", "X-Admin-Key"))])
 
 
 class CoreMemoryRequest(BaseModel):

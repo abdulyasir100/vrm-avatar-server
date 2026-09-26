@@ -13,6 +13,16 @@ Key patterns:
 import logging
 from typing import Any
 
+from services import plugin_loader
+
+# Settings declared in manifest.settings_schema are edited live on the /settings page.
+# Read them at call time (never cache in a module constant), e.g.:
+#     plugin_loader.get_setting("example", "some_number")  -> 100 by default
+# Use the manifest's "name" field here ("example"), not the folder name
+# ("plugin-example") — plugin_loader resolves plugins by manifest name.
+# If your storage.py defines get_setting/set_setting, the values live in your own
+# SQLite settings table instead of DATA_DIR/plugin_settings.json.
+
 logger = logging.getLogger(__name__)
 
 # Storage module — injected by plugin_loader after init
@@ -118,3 +128,16 @@ async def background_tick():
 async def scheduled_daily():
     """Called at the configured time. Return a prompt string for LLM to speak, or None."""
     return None  # Return a prompt string like "Tell the user about X. One sentence."
+
+
+# --- Optional hooks (define only the ones you need; the loader looks them up by name) ---
+
+def build_chat_context() -> str:
+    """Live state to put in the chat system prompt every turn. Return "" for nothing."""
+    return ""
+
+
+def on_turn_end(turn: dict) -> None:
+    """Called after every chat turn. turn = {message, reply, context, user_name, tool, ok}.
+    Keep it fast and synchronous (it runs inside the request); the skills plugin records tasks here."""
+    return None

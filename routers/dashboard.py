@@ -1,8 +1,10 @@
-"""GET /dashboard — operational metrics JSON, GET /dashboard/ui — HTML view.
+"""GET /dashboard — operational metrics JSON, GET /dashboard/ui — HTML view, GET /settings — settings GUI.
 
 Read-only: every number is derived from existing logs + memory.db. See
 services/dashboard_stats.py for the data layer.
 """
+
+from pathlib import Path
 
 from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -10,6 +12,16 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from services import dashboard_stats
 
 router = APIRouter()
+
+_SETTINGS_PAGE = Path(__file__).resolve().parent.parent / "web" / "settings.html"
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_ui():
+    """Settings GUI. The page itself holds nothing secret and is open; every call it makes goes to
+    /admin/* and /plugin/*, which ask for X-Admin-Key (the page prompts for it once per browser).
+    It draws itself from the settings_registry schema, so a new Setting row needs no change here."""
+    return _SETTINGS_PAGE.read_text(encoding="utf-8")
 
 
 @router.get("/dashboard")

@@ -2,14 +2,22 @@
 
 Tier 2: Persistent conversation history — survives server restarts.
 Tier 3: Core memories — permanent facts, user preferences, relationship milestones.
+        Facts and preferences are about the owner, so they live in the shared brain
+        (services/brain) where every character sees them; relationship and event
+        memories stay in this character's own DB. This module is the one facade.
 """
 
 import sqlite3
 import logging
+import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
+
+import config
+from services import brain
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +26,7 @@ _lock = Lock()
 _session_id: str = ""
 
 
-def init(db_path: str = "data/memory.db") -> None:
+def init(db_path: str = config.MEMORY_DB_PATH) -> None:
     """Initialize the memory database and create tables if needed."""
     global _DB_PATH, _session_id
 
@@ -28,6 +36,10 @@ def init(db_path: str = "data/memory.db") -> None:
     _session_id = uuid.uuid4().hex[:12]
 
     with _connect() as conn:
+        if config.SQLITE_WAL:
+            # Persistent per-file, so mood/user_state/dashboard connections inherit it.
+            # Readers stop blocking the writer — the background loops share this DB.
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +73,13 @@ def init(db_path: str = "data/memory.db") -> None:
             CREATE INDEX IF NOT EXISTS idx_core_category ON core_memories(category);
         """)
 
+        # synced=1: this shared-category row now lives in the brain; kept here as a backup only.
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(core_memories)")}
+        if "synced" not in columns:
+            conn.execute("ALTER TABLE core_memories ADD COLUMN synced INTEGER NOT NULL DEFAULT 0")
+
     logger.info(f"Memory DB initialized at {_DB_PATH} (session: {_session_id})")
+    sync_to_brain()
 
 
 def _connect() -> sqlite3.Connection:
@@ -149,13 +167,34 @@ def clear_conversation_history() -> None:
 
 # ─── Tier 3: Core Memories ──────────────────────────────────────────────
 
-def add_core_memory(category: str, content: str, source: str | None = None) -> int:
-    """Store a core memory. Returns the memory ID.
+_PRIVATE_COLUMNS = "id, category, content, source, created_at"
+# Rows still owned by this DB: private categories, plus shared ones the brain hasn't taken yet.
+_PRIVATE_LIVE = "synced = 0"
 
-    Categories: 'fact', 'preference', 'relationship', 'event'
-    Deduplicated case-insensitive + whitespace-normalized against existing entries
-    in the same category — returns existing id if duplicate found.
-    """
+_BRAIN_CACHE_SECONDS = 20  # how stale another character's new fact may be in this prompt
+_brain_cache: list[dict] = []
+_brain_cache_at = 0.0
+
+
+def _brain_rows() -> list[dict]:
+    """Shared facts, oldest first. Serves the last good copy while the brain is unreachable."""
+    global _brain_cache, _brain_cache_at
+    if time.time() - _brain_cache_at > _BRAIN_CACHE_SECONDS:
+        try:
+            rows = brain.get().all()
+            _brain_cache = [{**r, "source": r["author"], "shared": True} for r in rows]
+        except Exception as e:
+            logger.warning(f"[memory] Brain unreachable, using cached shared facts: {e}")
+        _brain_cache_at = time.time()
+    return _brain_cache
+
+
+def _brain_changed() -> None:
+    global _brain_cache_at
+    _brain_cache_at = 0.0
+
+
+def _add_private(category: str, content: str, source: str | None) -> int:
     normalized = content.lower().strip()
     with _lock, _connect() as conn:
         existing = conn.execute(
@@ -165,24 +204,87 @@ def add_core_memory(category: str, content: str, source: str | None = None) -> i
         if existing:
             logger.info(f"Core memory duplicate skipped [{category}]: {content[:60]}...")
             return existing["id"]
-        cursor = conn.execute(
+        return conn.execute(
             "INSERT INTO core_memories (category, content, source) VALUES (?, ?, ?)",
             (category, content, source),
-        )
-        mem_id = cursor.lastrowid
+        ).lastrowid
+
+
+def add_core_memory(category: str, content: str, source: str | None = None) -> int:
+    """Store a core memory. Returns the memory ID.
+
+    Categories: 'fact', 'preference' (shared brain) and 'relationship', 'event' (private).
+    Duplicates return the existing id. If the brain is down the fact is parked in the
+    private table and moved across by the next sync_to_brain().
+    """
+    if brain.is_shared_category(category):
+        try:
+            # "llm"/None = this character learned it in conversation; anything else names the
+            # outside writer (e.g. "dashboard"), so nobody is credited with a fact they never heard.
+            author = config.CHARACTER_NAME if source in (None, "", "llm") else source
+            mem_id = brain.get().add(category, content, author)
+            _brain_changed()
+            logger.info(f"Shared fact added [{category}]: {content[:60]}...")
+            return mem_id
+        except Exception as e:
+            logger.warning(f"[memory] Brain unreachable, parking fact locally: {e}")
+    mem_id = _add_private(category, content, source)
     logger.info(f"Core memory added [{category}]: {content[:60]}...")
     return mem_id
 
 
-def get_recent_core_memories(limit: int = 10) -> list[dict]:
-    """Get the most recent N core memories, newest first."""
+def sync_to_brain() -> int:
+    """Move parked shared-category rows into the brain. Returns how many moved.
+
+    Runs at startup: the first run migrates a pre-brain install, later runs pick up
+    facts saved while the brain was unreachable. Rows stay behind as synced=1 backups,
+    so a fact deleted from the brain is never resurrected from here.
+    """
+    marks = ",".join("?" * len(brain.SHARED_CATEGORIES))
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, category, content, source, created_at FROM core_memories "
-            "ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+            f"SELECT id, category, content FROM core_memories WHERE {_PRIVATE_LIVE} "
+            f"AND category IN ({marks}) ORDER BY created_at, id",
+            tuple(brain.SHARED_CATEGORIES),
         ).fetchall()
-    return [dict(r) for r in rows]
+    if not rows:
+        return 0
+    moved = 0
+    try:
+        backend = brain.get()
+        for row in rows:
+            backend.add(row["category"], row["content"], config.CHARACTER_NAME)
+            with _lock, _connect() as conn:
+                conn.execute("UPDATE core_memories SET synced = 1 WHERE id = ?", (row["id"],))
+            moved += 1
+    except Exception as e:
+        logger.warning(f"[memory] Brain sync stopped after {moved}/{len(rows)}: {e}")
+    if moved:
+        _brain_changed()
+        logger.info(f"[memory] Moved {moved} shared facts into the brain")
+    return moved
+
+
+# Memories that are daily stat logs (e.g. "step count on 2026-09-11: 4,338 steps").
+# They are kept as the record of those stats, but they crowd out real memories in
+# recency-based picks, so idle talk skips them.
+DAILY_STAT_PATTERN = re.compile(r"\bstep count\b|\b\d[\d,]*\s*steps\b", re.IGNORECASE)
+
+
+def is_daily_stat_memory(content: str) -> bool:
+    return bool(DAILY_STAT_PATTERN.search(content or ""))
+
+
+def get_recent_core_memories(limit: int = 10, exclude_daily_stats: bool = False) -> list[dict]:
+    """Get the most recent N core memories (private + shared), newest first.
+
+    exclude_daily_stats=True drops stat-log memories (see DAILY_STAT_PATTERN) before
+    applying the limit, so the result is N memories worth talking about.
+    """
+    mems = sorted(get_core_memories(), key=lambda m: m["created_at"] or "", reverse=True)
+    if exclude_daily_stats:
+        mems = [m for m in mems if not is_daily_stat_memory(m["content"])]
+    return mems[:limit]
 
 
 def get_recent_assistant_messages(limit: int = 10) -> list[dict]:
@@ -227,24 +329,24 @@ def get_last_user_message_timestamp() -> float | None:
 
 
 def get_core_memories(category: str | None = None) -> list[dict]:
-    """Get all core memories, optionally filtered by category."""
+    """All core memories this character can see: its own, then the shared facts."""
+    where, args = _PRIVATE_LIVE, ()
+    if category:
+        where, args = f"{_PRIVATE_LIVE} AND category = ?", (category,)
     with _connect() as conn:
-        if category:
-            rows = conn.execute(
-                "SELECT id, category, content, source, created_at FROM core_memories "
-                "WHERE category = ? ORDER BY created_at",
-                (category,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, category, content, source, created_at FROM core_memories "
-                "ORDER BY created_at",
-            ).fetchall()
-    return [dict(r) for r in rows]
+        rows = conn.execute(
+            f"SELECT {_PRIVATE_COLUMNS} FROM core_memories WHERE {where} ORDER BY created_at", args
+        ).fetchall()
+    shared = [m for m in _brain_rows() if not category or m["category"] == category]
+    return [dict(r) for r in rows] + shared
 
 
 def update_core_memory(memory_id: int, new_content: str) -> bool:
     """Update a core memory's content by ID."""
+    if brain.is_brain_id(memory_id):
+        updated = brain.get().update(memory_id, new_content)
+        _brain_changed()
+        return updated
     with _lock, _connect() as conn:
         cursor = conn.execute(
             "UPDATE core_memories SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -255,20 +357,56 @@ def update_core_memory(memory_id: int, new_content: str) -> bool:
 
 def delete_core_memory(memory_id: int) -> bool:
     """Delete a core memory by ID."""
+    if brain.is_brain_id(memory_id):
+        deleted = brain.get().delete(memory_id)
+        _brain_changed()
+        return deleted
     with _lock, _connect() as conn:
         cursor = conn.execute("DELETE FROM core_memories WHERE id = ?", (memory_id,))
         return cursor.rowcount > 0
 
 
-def format_core_memories_for_prompt() -> str:
-    """Format core memories as a text block for the system prompt, with IDs for update/delete."""
-    memories = get_core_memories()
-    if not memories:
-        return ""
+def _shared_for_prompt(shared: list[dict], query: str | None) -> list[dict]:
+    """Every shared fact while they fit; past BRAIN_PROMPT_MAX, the ones this message
+    is about plus the newest — a brain fed by several characters only grows."""
+    cap = config.BRAIN_PROMPT_MAX
+    if len(shared) <= cap:
+        return shared
+    keep: dict[int, dict] = {}
+    if query:
+        try:
+            keep = {r["id"]: r for r in brain.get().search(query, limit=cap // 2)}
+        except Exception as e:
+            logger.warning(f"[memory] Brain search failed: {e}")
+    for m in reversed(shared):
+        if len(keep) >= cap:
+            break
+        if not is_daily_stat_memory(m["content"]):
+            keep.setdefault(m["id"], m)
+    return sorted(keep.values(), key=lambda m: m["id"])
 
-    lines = ["\n## Things I Remember About You"]
-    for m in memories:
-        lines.append(f"- #{m['id']} [{m['category']}] {m['content']}")
+
+def format_core_memories_for_prompt(query: str | None = None) -> str:
+    """Core memories as prompt text, with IDs for update/delete.
+
+    Private memories are the character's own. Shared facts name their author when it
+    is someone else: usable knowledge, never a memory this character may claim.
+    """
+    memories = get_core_memories()
+    private = [m for m in memories if not m.get("shared")]
+    shared = _shared_for_prompt([m for m in memories if m.get("shared")], query)
+
+    lines: list[str] = []
+    if private:
+        lines.append("\n## Things I Remember About You")
+        lines += [f"- #{m['id']} [{m['category']}] {m['content']}" for m in private]
+    if shared:
+        lines.append(f"\n## Shared Notes About {config.OWNER_NAME}")
+        lines.append("All true about him. Unmarked lines you learned yourself; a line marked (via NAME) "
+                     "was learned by NAME — use the fact, but never claim you were the one he told.")
+        for m in shared:
+            via = "" if m["author"] in ("", config.CHARACTER_NAME) else f" (via {m['author']})"
+            lines.append(f"- #{m['id']} [{m['category']}] {m['content']}{via}")
     return "\n".join(lines)
 
 def cleanup_old_conversations(keep_days: int = 30) -> int:
@@ -286,9 +424,7 @@ def cleanup_old_conversations(keep_days: int = 30) -> int:
 
 def get_core_memory_count() -> int:
     """Total core memories stored."""
-    with _connect() as conn:
-        row = conn.execute("SELECT COUNT(*) as cnt FROM core_memories").fetchone()
-    return row["cnt"]
+    return len(get_core_memories())
 
 
 def get_current_session_id() -> str:
@@ -309,6 +445,7 @@ def add_session_summary(summary: str, message_count: int,
         )
         sid = cursor.lastrowid
     logger.info(f"[memory] Session summary added ({message_count} msgs): {summary[:60]}...")
+    brain.journal_log(_SUMMARY_KIND, summary)
     return sid
 
 
@@ -346,15 +483,25 @@ def get_unsummarized_messages() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def format_summaries_for_prompt() -> str:
-    """Format recent session summaries for injection into system prompt."""
-    summaries = get_recent_summaries()
-    if not summaries:
-        return ""
+_SUMMARY_KIND = "summary"
+_PEER_SUMMARY_HOURS = 72  # same window as this character's own summaries
+_PEER_SUMMARY_LIMIT = 4
 
-    lines = ["\n## Recent Conversations"]
-    for s in summaries:
-        lines.append(f"- {s['summary']}")
+
+def format_summaries_for_prompt() -> str:
+    """Recent session summaries for the system prompt: this character's own conversations,
+    then what he did with the other characters (from the brain's journal)."""
+    lines: list[str] = []
+    summaries = get_recent_summaries()
+    if summaries:
+        lines.append("\n## Recent Conversations")
+        lines += [f"- {s['summary']}" for s in summaries]
+
+    elsewhere = brain.journal_from_others(_SUMMARY_KIND, _PEER_SUMMARY_HOURS, _PEER_SUMMARY_LIMIT)
+    if elsewhere:
+        lines.append(f"\n## What {config.OWNER_NAME} Did With Your Fellow Companions")
+        lines.append("You were not there. You know it because they keep shared notes — refer to it that way.")
+        lines += [f"- (with {e['author']}, {brain.age_label(e['age_minutes'])}) {e['content']}" for e in elsewhere]
     return "\n".join(lines)
 
 
@@ -364,7 +511,7 @@ def search_and_delete_core_memories(query: str) -> list[dict]:
     """Search core memories by keyword and delete all matches. Returns deleted memories."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, category, content FROM core_memories WHERE content LIKE ?",
+            f"SELECT id, category, content FROM core_memories WHERE {_PRIVATE_LIVE} AND content LIKE ?",
             (f"%{query}%",),
         ).fetchall()
         deleted = [dict(r) for r in rows]
@@ -372,5 +519,11 @@ def search_and_delete_core_memories(query: str) -> list[dict]:
             ids = [r["id"] for r in deleted]
             placeholders = ",".join("?" * len(ids))
             conn.execute(f"DELETE FROM core_memories WHERE id IN ({placeholders})", ids)
-            logger.info(f"[memory] Deleted {len(deleted)} core memories matching '{query}'")
+    try:
+        deleted += [{k: r[k] for k in ("id", "category", "content")} for r in brain.get().delete_matching(query)]
+        _brain_changed()
+    except Exception as e:
+        logger.warning(f"[memory] Brain unreachable, shared facts not searched: {e}")
+    if deleted:
+        logger.info(f"[memory] Deleted {len(deleted)} core memories matching '{query}'")
     return deleted

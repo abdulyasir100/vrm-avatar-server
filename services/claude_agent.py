@@ -34,15 +34,18 @@ Performance design — persistent warm client:
 run_agent() returns the same result-dict shape as the legacy path PLUS
 `sdk_tools_ran` (list of {tool, arg, result}) so routers/chat.py can apply
 side-effects / skip flags WITHOUT re-executing the handler (the SDK already ran it).
-On any SDK error it returns None, so llm.py falls through to the Groq/Cerebras chain.
+On any SDK error it returns None, so llm.py falls through to the Groq fallback chain.
 """
 
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 import config
+from services import access
+from services import agent_cli_common as common
 from services import tool_registry
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,7 @@ _server = None           # built-once in-process MCP server
 _allowed: list[str] = []  # mcp__avatar__* tool names exposed
 _turn_seq = 0            # unique session_id source
 _turns_since_reconnect = 0
+_client_key: tuple | None = None  # options the live client was built with
 
 
 def is_available() -> bool:
@@ -94,11 +98,13 @@ def _resolve_sdk_tools() -> list[str]:
     (the seamless win); only TOOL_CALL_MODE coarse gates apply. Resolved once when
     the persistent MCP server is built."""
     mode = config.TOOL_CALL_MODE
-    if mode == "off":
+    if mode == "off" or not access.allows("tools"):
         return []
     names = set(tool_registry.list_tools())
     if mode == "semi_normal":
         names &= tool_registry.MAIN_TOOLS
+    if not config.SHELL_ENABLED or not access.allows("shell"):
+        names.discard("run_shell")
     return sorted(names)
 
 
@@ -146,10 +152,25 @@ def _build_server():
     logger.info(f"[claude_agent] built MCP server with {len(names)} tools")
 
 
+def _desired_key(model: str) -> tuple:
+    """Everything baked into the client/MCP server at connect. A change means reconnect."""
+    return (model, config.CLAUDE_SDK_EFFORT, common.fallback_for(model),
+            config.CLAUDE_SDK_ISOLATE, config.TOOL_CALL_MODE, config.SHELL_ENABLED, config.ACCESS_LEVEL)
+
+
 async def _ensure_client(model: str):
-    """Return a connected persistent client, (re)creating it as needed. None on failure."""
+    """Return a connected persistent client, (re)creating it as needed. None on failure.
+
+    Called under _lock, so a reconnect never kills an in-flight turn.
+    """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
-    global _client, _turns_since_reconnect
+    global _client, _server, _client_key, _turns_since_reconnect
+
+    key = _desired_key(model)
+    if _client is not None and _client_key != key:
+        logger.info(f"[claude_agent] options changed {_client_key} -> {key}, reconnecting")
+        await _shutdown_client()
+        _server = None  # tool set may have changed (TOOL_CALL_MODE / SHELL_ENABLED)
 
     # Periodic recycle to drop accumulated per-session state in the long-running CLI.
     if _client is not None and _turns_since_reconnect >= _RECONNECT_EVERY:
@@ -162,18 +183,31 @@ async def _ensure_client(model: str):
         _build_server()
 
     try:
-        options = ClaudeAgentOptions(
+        # Lean boot (speed pack): neutral empty cwd, no built-in tools (their schemas rode in
+        # every turn; the avatar MCP tools are unaffected), only our MCP server.
+        opts = dict(
             system_prompt=_IDENTITY_NOTE,
             model=model,
             max_turns=6,
             mcp_servers={_MCP_SERVER_NAME: _server} if _allowed else {},
             allowed_tools=_allowed,
+            cwd=common.NEUTRAL_CWD,
+            tools=[],
+            strict_mcp_config=True,
         )
-        client = ClaudeSDKClient(options=options)
+        fallback = common.fallback_for(model)
+        if fallback:
+            opts["fallback_model"] = fallback
+        if config.CLAUDE_SDK_EFFORT:
+            opts["effort"] = config.CLAUDE_SDK_EFFORT
+        if config.CLAUDE_SDK_ISOLATE:
+            opts["setting_sources"] = []
+        client = ClaudeSDKClient(options=ClaudeAgentOptions(**opts))
         await client.connect()
         _client = client
+        _client_key = key
         _turns_since_reconnect = 0
-        logger.info("[claude_agent] persistent client connected")
+        logger.info(f"[claude_agent] persistent client connected key={key}")
         return _client
     except Exception as e:
         logger.error(f"[claude_agent] client connect failed: {e}")
@@ -190,6 +224,12 @@ async def _shutdown_client():
         except Exception:
             pass
         _client = None
+
+
+async def shutdown():
+    """Disconnect the persistent client (app shutdown)."""
+    async with _lock:
+        await _shutdown_client()
 
 
 async def run_agent(
@@ -223,7 +263,8 @@ async def run_agent(
         message, context, user_name, use_function_calling=True,
         reply_to=reply_to, is_system_prompt=is_system_prompt,
     )
-    sys_block, conversation = _build_prompt(messages)
+    # build_prompt returns (conversation, system_prompt) — system content goes FIRST.
+    conversation, sys_block = _build_prompt(messages)
     if not conversation and not sys_block:
         return None
     full_prompt = f"{sys_block}\n\n{conversation}".strip() if sys_block else conversation
@@ -235,21 +276,29 @@ async def run_agent(
         _G["sink"] = []
         _G["ctx"] = {"context": context, "user_name": user_name}
         try:
-            client = await _ensure_client(model or config.get_llm_model())
+            model = model or config.get_llm_model()
+            t0 = time.perf_counter()
+            client = await _ensure_client(model)
+            connect_s = time.perf_counter() - t0
             if client is None:
                 return None
 
             _turn_seq += 1
             session_id = f"turn-{_turn_seq}"  # fresh per turn → no history leakage
 
+            result_msg = None
+
             async def _collect() -> str:
+                nonlocal result_msg
                 final = ""
                 await client.query(full_prompt, session_id=session_id)
                 async for msg in client.receive_response():
                     if isinstance(msg, ResultMessage):
+                        result_msg = msg
                         final = msg.result or final
                 return final
 
+            t1 = time.perf_counter()
             try:
                 # Timeout so a hung CLI can't hold the turn lock forever — drop the
                 # client and fall through to the fallback chain.
@@ -257,7 +306,22 @@ async def run_agent(
             except (Exception, asyncio.TimeoutError) as e:
                 logger.error(f"[claude_agent] query failed/timeout, dropping client: {e}")
                 await _shutdown_client()
+                common.record_perf("sdk", model, connect=connect_s,
+                                   ran=time.perf_counter() - t1, ok=False)
                 return None
+
+            subtype = getattr(result_msg, "subtype", None)
+            if subtype and subtype != "success":
+                logger.warning(f"[claude_agent] turn ended with subtype={subtype}")
+            common.record_perf(
+                "sdk", model, effort=config.CLAUDE_SDK_EFFORT or "-",
+                warm=connect_s < 0.05, connect=connect_s, ran=time.perf_counter() - t1,
+                api_ms=getattr(result_msg, "duration_api_ms", None),
+                turns=getattr(result_msg, "num_turns", None),
+                tools=len(_G["sink"]), prompt_chars=len(full_prompt),
+                out_chars=len(final_text or ""), subtype=subtype, ok=bool(final_text),
+            )
+            common.capture(model, _IDENTITY_NOTE, full_prompt, final_text)
 
             _turns_since_reconnect += 1
             sink = list(_G["sink"])

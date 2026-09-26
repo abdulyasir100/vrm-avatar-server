@@ -11,12 +11,13 @@ import asyncio
 import uuid
 import base64
 import os
+import tempfile
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
-from services import llm, tts_service, tool_registry, memory, costume_registry, background, sleep, mood, sticker, ntfy
+from services import llm, tts_service, tool_registry, memory, background, sleep, mood, sticker, ntfy
 from services.ws_manager import manager
-from services import tool_router
+from services import plugin_loader, turn_context
 import config
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,9 @@ async def post_chat(req: ChatRequest):
     if req.image_base64:
         try:
             img_bytes = base64.b64decode(req.image_base64)
-            image_path = f"/tmp/avatar_img_{uuid.uuid4().hex[:8]}.png"
+            # tempfile, not a literal /tmp: on the Windows harness /tmp resolves
+            # drive-relative and the CLI (spawned on another drive) can't Read it.
+            image_path = os.path.join(tempfile.gettempdir(), f"avatar_img_{uuid.uuid4().hex[:8]}.png")
             with open(image_path, "wb") as f:
                 f.write(img_bytes)
             logger.info(f"[chat] Saved image to {image_path} ({len(img_bytes)} bytes)")
@@ -120,26 +123,22 @@ async def post_chat(req: ChatRequest):
     tool_arg = result.get("tool_arg")
 
     # Claude Agent SDK path: tools already ran natively inside the agentic loop.
-    # result["sdk_tools_ran"] is a list of {tool, arg, result}. Don't re-execute or
-    # keyword-fallback — just merge the executed results into the shape the
-    # downstream broadcast/TTS code expects.
+    # result["sdk_tools_ran"] is a list of {tool, arg, result}. Don't re-execute —
+    # just merge the executed results into the shape the downstream broadcast/TTS
+    # code expects.
     sdk_ran = result.get("sdk_tools_ran")
     _used_sdk = sdk_ran is not None
 
     costume_change_id = None
     tool_result = None
 
-    # Tool calls come from the LLM (native SDK tool calls or [TOOL:] text tags).
-    # No engine-side keyword fallback — plugins declare their own triggers.
-
     if _used_sdk and sdk_ran:
         # Merge SDK-executed tool results. Costume effects route through
         # costume_change_id; other side_effects (gacha/roulette/thr) broadcast
         # after the chat audio frame. result is "" so the reply isn't re-appended
-        # (the model already spoke the outcome) — except the meme special-case.
+        # (the model already spoke the outcome).
         merged_side_effects = []
         skip_tts_any = skip_reply_any = False
-        meme_text = None
         non_costume_tool = None
         for entry in sdk_ran:
             res = entry.get("result") or {}
@@ -153,17 +152,13 @@ async def post_chat(req: ChatRequest):
                     merged_side_effects.append(effect)
             if entry["tool"] != "change_costume":
                 non_costume_tool = entry["tool"]
-            if entry["tool"] == "get_political_meme" and res.get("result"):
-                meme_text = res["result"]
         tool_executed = non_costume_tool or sdk_ran[-1]["tool"]
         tool_result = {
-            "result": meme_text if meme_text else "",
+            "result": "",
             "side_effects": merged_side_effects,
             "skip_tts": skip_tts_any,
             "skip_reply": skip_reply_any,
         }
-        if meme_text:
-            tool_executed = "get_political_meme"
         logger.info(f"[chat] SDK tools ran: {[e['tool'] for e in sdk_ran]}")
 
     if tool_name and config.MOOD_ENABLED and mood.should_disobey():
@@ -207,10 +202,7 @@ async def post_chat(req: ChatRequest):
     if tool_executed and tool_result:
         tool_text = tool_result.get("result", "")
         if tool_text:
-            if tool_executed == "get_political_meme":
-                # Meme tool: just use the meme, skip LLM blabber
-                reply = tool_text
-            elif not reply:
+            if not reply:
                 # LLM gave empty text — use tool result as reply
                 reply = tool_text
             else:
@@ -223,6 +215,10 @@ async def post_chat(req: ChatRequest):
     chat_logger.info(f"[{req.context}] {config.CHARACTER_NAME} [{emotion}]: {reply}")
     if tool_executed:
         chat_logger.info(f"[{req.context}] Tool: {tool_executed}({tool_arg})")
+    plugin_loader.notify_turn_end({
+        "message": req.message, "reply": reply, "context": req.context, "user_name": req.user_name,
+        "tool": tool_executed, "ok": reply != config.OFFLINE_REPLY,
+    })
 
     # --- TTS + broadcast: skip TTS if no avatar client connected (saves VRAM/time) ---
     # Also skip if tool explicitly says so (e.g. gacha/roulette/THR tablet animations)
@@ -312,8 +308,8 @@ async def post_chat(req: ChatRequest):
     if config.STICKER_ENABLED:
         resolved_sticker = sticker.resolve(reply, emotion)
 
-    # Push to Telegram for non-telegram contexts (e.g. tablet touch)
-    if req.context != "telegram" and reply:
+    # Push to Telegram unless the calling surface shows the reply itself (e.g. tablet touch does not)
+    if req.context not in turn_context.SELF_DELIVERING_SURFACES and reply:
         await ntfy.notify(title=config.CHARACTER_NAME, message=reply)
         if config.STICKER_ENABLED and resolved_sticker:
             await ntfy.send_sticker(resolved_sticker)

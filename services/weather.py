@@ -1,7 +1,7 @@
 """Weather service — fetches current weather from Open-Meteo (free, no API key).
 
 Caches results for 30 minutes to avoid hammering the API.
-Location comes from config (WEATHER_LAT / WEATHER_LON / WEATHER_LOCATION_NAME).
+Location comes from IP geolocation / config; the forecast uses config.TIMEZONE.
 """
 
 import time

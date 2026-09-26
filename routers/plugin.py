@@ -1,16 +1,19 @@
 """Plugin API — list plugins, execute commands, handle callbacks."""
 
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Any
 from services import plugin_loader
+from services.auth import require_key
 
 logger = logging.getLogger(__name__)
 # Dedicated chat-log channel so dashboard_stats can grep /p.* invocations
 # (the regular logger goes to all.log only).
 chat_logger = logging.getLogger("chat")
-router = APIRouter(prefix="/plugin")
+# Plugin commands act on the user's behalf (smart home, clock-in, passwords), so remote
+# callers need the admin key. Same-host services (the game backend) call this too.
+router = APIRouter(prefix="/plugin", dependencies=[Depends(require_key("ADMIN_KEY", "X-Admin-Key", trust_loopback=True))])
 
 
 @router.get("/list")
@@ -65,6 +68,87 @@ async def plugin_guide():
             sections.append({"name": name, "examples": examples})
 
     return {"sections": sections}
+
+
+# ─── management (settings page) ─────────────────────────────────────────────
+
+
+def _row(name: str) -> dict:
+    row = next((p for p in plugin_loader.list_all() if p["name"] == name), None)
+    if row is None:
+        raise HTTPException(404, f"Plugin '{name}' not found.")
+    return row
+
+
+@router.get("/all")
+async def all_plugins():
+    """Every plugin on disk with this instance's on/off state and settings rows."""
+    return {"plugins": plugin_loader.list_all()}
+
+
+@router.post("/{name}/enable")
+async def enable(name: str):
+    _row(name)
+    reason = plugin_loader.locked_reason(name)
+    if reason:
+        raise HTTPException(409, f"{name} is locked: {reason}")
+    try:
+        ok = plugin_loader.enable_plugin(name)
+    except Exception as e:
+        logger.error(f"[plugin] enable {name} failed: {e!r}")
+        raise HTTPException(500, f"{name} failed to load: {e}")
+    if not ok:
+        raise HTTPException(404, f"Plugin '{name}' not found.")
+    # Toggling only updates tool_registry live; plugin trigger routes and the LLM's
+    # tool docs/SDK tool list are resolved once at startup, so chat tools need a restart.
+    return {"ok": True, "plugin": _row(name), "restart_required": True}
+
+
+@router.post("/{name}/disable")
+async def disable(name: str):
+    _row(name)
+    ok = await plugin_loader.disable_plugin(name)
+    if not ok:
+        raise HTTPException(404, f"Plugin '{name}' not found.")
+    return {"ok": True, "plugin": _row(name), "restart_required": True}
+
+
+@router.get("/{name}/settings")
+async def get_settings(name: str):
+    _row(name)
+    return {"settings": plugin_loader.get_settings(name)}
+
+
+@router.put("/{name}/settings")
+async def put_settings(name: str, values: dict[str, Any] = Body(...)):
+    _row(name)
+    if name not in plugin_loader.get_enabled_plugins():
+        raise HTTPException(409, f"Enable {name} before changing its settings.")
+    schema = {row["key"] for row in plugin_loader.get_settings(name)}
+    unknown = sorted(set(values) - schema)
+    if unknown:
+        raise HTTPException(400, f"Unknown setting(s): {', '.join(unknown)}")
+    # Validate the whole batch before writing any of it.
+    try:
+        for key, value in values.items():
+            plugin_loader.validate_setting(name, key, value)
+        for key, value in values.items():
+            plugin_loader.set_setting(name, key, value)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"settings": plugin_loader.get_settings(name)}
+
+
+@router.delete("/{name}/settings/{key}")
+async def reset_setting(name: str, key: str):
+    _row(name)
+    try:
+        plugin_loader.reset_setting(name, key)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"settings": plugin_loader.get_settings(name)}
 
 
 class PluginCommandRequest(BaseModel):

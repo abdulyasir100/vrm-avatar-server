@@ -11,32 +11,31 @@ Window arg is "24h" | "7d" | "all".
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sqlite3
 import subprocess
 from collections import Counter
-from datetime import datetime, timedelta, timezone
-
-from utils import time as ltime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
 import config
+from utils import time as ltime
 from services import plugin_loader
 
 logger = logging.getLogger(__name__)
 
-
-_LOG_DIR = Path("logs")
+_LOG_DIR = Path(config.LOG_DIR)
 _DB_PATH = Path(config.MEMORY_DB_PATH)
+
 
 # Sandbox apps whose git activity feeds the dashboard. Configure via the
 # TRACKED_APPS env var as JSON: '[{"name": "my-app", "path": "/abs/path"}]'.
 # Empty by default — a fresh install tracks nothing until you point it at apps.
 def _load_tracked_apps() -> list[dict]:
-    import json
     raw = os.environ.get("TRACKED_APPS", "").strip()
     if not raw:
         return []
@@ -46,12 +45,13 @@ def _load_tracked_apps() -> list[dict]:
     except Exception:
         return []
 
+
 _TRACKED_APPS = _load_tracked_apps()
 
 # --- Log line parsers ---------------------------------------------------------
 
 # Format produced by main.py file handlers:
-#   2026-05-08 14:54:08 [INFO] chat: [telegram] Venomaru: hi
+#   2026-05-08 14:54:08 [INFO] chat: [telegram] User: hi
 _LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\]")
 # chat.log specific bits:
 _TOOL_RE = re.compile(r"chat: \[(?P<context>[^\]]+)\] Tool: (?P<tool>\w+)\(")

@@ -25,7 +25,7 @@ async def get_weather():
 @router.get("/weather/ui", response_class=HTMLResponse)
 async def weather_ui():
     """Serve the cosmic weather dashboard."""
-    return _WEATHER_HTML.replace("{{CHARACTER_NAME}}", config.CHARACTER_NAME)
+    return _WEATHER_HTML.replace("{{CHARACTER_NAME}}", config.CHARACTER_SHORT_NAME)
 
 
 _WEATHER_HTML = """\

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import logging.handlers
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from services import llm, tts_service, stt_service, rvc_service, tool_registry, memory, tool_router, costume_registry, background, message_queue, mood, sticker, plugin_loader
@@ -11,8 +12,8 @@ import services.tools
 from routers import status, chat, tts, stt, ws, event, costume, memory_router, weather, prayer, admin, stickers, plugin as plugin_router, dashboard, phone_event, trading
 import config
 
-_LOG_DIR = Path("logs")
-_LOG_DIR.mkdir(exist_ok=True)
+_LOG_DIR = Path(config.LOG_DIR)
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
 _LOG_FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
@@ -74,9 +75,21 @@ app.include_router(dashboard.router)
 app.include_router(phone_event.router)
 app.include_router(trading.router)
 
-audio_dir = Path("audio")
-audio_dir.mkdir(exist_ok=True)
-app.mount("/audio", StaticFiles(directory="audio"), name="audio")
+# CORS is off by default (no browser client calls this API cross-origin). Keep the
+# allowlist EXACT if a future browser client needs it — middleware is global, so a
+# wildcard would expose /admin/* to any page the browser happens to load.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    max_age=600,
+)
+
+audio_dir = Path(config.AUDIO_DIR)
+audio_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/audio", StaticFiles(directory=audio_dir), name="audio")
 
 @app.on_event("startup")
 async def startup():
@@ -88,9 +101,12 @@ async def startup():
     runtime_settings.apply()
     logger.info("Avatar AI Server starting...")
     logger.info(f"Character: {config.CHARACTER_NAME} (nicknames: {config.CHARACTER_NICKNAMES})")
+    logger.info(f"Instance: {config.CHARACTER_ID or 'default'} (data: {config.DATA_DIR})")
     logger.info(f"Port: {config.AVATAR_SERVER_PORT}")
     logger.info(f"LLM Provider: {config.LLM_PROVIDER}")
     logger.info(f"LLM Model: {config.get_llm_model()}")
+    if not config.ADMIN_KEY:
+        logger.warning("ADMIN_KEY is not set: /admin/* is OPEN to anyone who can reach this port")
     logger.info("=" * 50)
 
     memory.init(config.MEMORY_DB_PATH)
@@ -107,7 +123,7 @@ async def startup():
 
     llm.load_system_prompt()
 
-    tool_router.load_tool_docs("prompts/tools")
+    tool_router.load_tool_docs(config.TOOL_DOCS_PATH)
     tool_router.setup_default_routes()
 
     plugin_loader.load_all_plugins()
@@ -117,6 +133,9 @@ async def startup():
 
     tools = tool_registry.list_tools()
     logger.info(f"Tools: {len(tools)} registered — {tools}")
+
+    from services import claude_cli
+    claude_cli.prime_pool()
 
     lm_status = await llm.check_llm()
     if lm_status == "ok":
@@ -155,13 +174,34 @@ async def startup():
     logger.info(f"Prayer Times: {prayer_status.upper()}")
 
     background.start()
-    logger.info(f"Background: idle talk every {config.IDLE_TALK_INTERVAL_HOURS}h, reminders on the 60s loop")
+    logger.info(f"Background: idle talk every {config.IDLE_TALK_INTERVAL_HOURS}h, reminders every {config.BACKGROUND_POLL_SECONDS}s")
 
     asyncio.create_task(llm.prime_phone_context())
 
     from services import user_state
     asyncio.create_task(user_state.refresh_loop())
     logger.info("User state: refresh loop scheduled")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Let plugins flush state."""
+    from services import claude_agent, claude_cli
+    claude_cli.close_pool()
+    try:
+        await claude_agent.shutdown()
+    except Exception as e:
+        logger.warning(f"[shutdown] claude_agent disconnect failed: {e}")
+    for name, entry in plugin_loader.get_enabled_plugins().items():
+        fn = getattr(entry.get("handler"), "shutdown", None)
+        if not callable(fn):
+            continue
+        try:
+            result = fn()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            logger.warning(f"[shutdown] plugin {name} flush failed: {e}")
 
 
 @app.get("/")

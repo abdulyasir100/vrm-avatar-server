@@ -1,7 +1,7 @@
 """RVC Service — character voice conversion via RVC v2.
 
 Converts Kokoro TTS output into the character's voice using an
-RVC v2 model (path configured via RVC_MODEL_PATH). Disabled by default.
+RVC v2 model (from HuggingFace or trained locally).
 
 Pipeline: Kokoro TTS WAV -> RVC voice conversion -> character WAV
 """

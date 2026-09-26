@@ -1,0 +1,25 @@
+{
+  "name": "notion",
+  "description": "Search, read and write the user's Notion pages (integration token)",
+  "version": "1.0",
+  "enabled": true,
+  "important": false,
+  "capability_note": "You can search and read the user's Notion pages, append notes to a page and create pages — but only pages they have shared with your integration are visible.",
+
+  "tools": [
+    {"name": "notion_search", "description": "Search the user's Notion workspace for pages and databases.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "What to look for"}}, "required": ["arg"]}},
+    {"name": "notion_read", "description": "Read a Notion page as Markdown.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "Page id or URL (from notion_search)"}}, "required": ["arg"]}},
+    {"name": "notion_append", "description": "Append text to the end of a Notion page.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "Pipe-separated: page id or URL|text to append"}}, "required": ["arg"]}},
+    {"name": "notion_create", "description": "Create a new Notion page under an existing page.",
+     "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "Pipe-separated: parent page id or URL|title|markdown body"}}, "required": ["arg"]}}
+  ],
+
+  "triggers": "\bnotion\b",
+
+  "telegram_commands": [
+    {"command": "notion", "description": "Notion connection status", "function": "cmd_status"}
+  ]
+}

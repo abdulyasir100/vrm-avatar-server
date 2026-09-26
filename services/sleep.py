@@ -13,12 +13,11 @@ When sleeping:
 
 import logging
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from utils import time as ltime
 
 logger = logging.getLogger(__name__)
-
 
 SLEEP_HOUR = 0       # midnight
 WAKE_HOUR = 5        # 5 AM
@@ -30,11 +29,12 @@ _forced_wake_until: float = 0.0
 
 
 def _now_wib() -> datetime:
+    """Local now (configured timezone). Name kept for existing callers."""
     return ltime.now()
 
 
 def _is_sleep_hours() -> bool:
-    """Check if current time is within sleep window (00:00 - 05:00 local time)."""
+    """Check if current time is within sleep window (00:00 - 05:00 local)."""
     hour = _now_wib().hour
     return hour >= SLEEP_HOUR and hour < WAKE_HOUR  # 0 <= hour < 5
 
@@ -119,6 +119,7 @@ def get_status() -> dict:
     return {
         "is_sleeping": _is_sleeping,
         "current_hour": now.hour,
+        "current_hour_wib": now.hour,  # legacy key, same value as current_hour
         "sleep_schedule": f"{SLEEP_HOUR:02d}:00-{WAKE_HOUR:02d}:00 {ltime.tz_label()}".rstrip(),
         "forced_wake": is_forced_wake(),
         "forced_wake_minutes_left": max(0, int((_forced_wake_until - time.time()) / 60)) if is_forced_wake() else 0,

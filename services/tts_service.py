@@ -27,6 +27,27 @@ _kokoro_ready = False  # track kokoro separately for fallback
 _engine = "kokoro"  # "qwen3tts", "hfspace", or "kokoro"
 
 
+def _audio_dir() -> Path:
+    """This instance's audio output dir (config.AUDIO_DIR), created on demand."""
+    import config
+    path = Path(config.AUDIO_DIR)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _tts_payload(text: str, emotion: str, language: str) -> dict:
+    """Request body for the remote /synthesize servers.
+
+    `ref_audio` picks this character's cloned voice on servers that support
+    per-request references (OmniVoice); others ignore the extra field.
+    """
+    import config
+    payload = {"text": text, "emotion": emotion.upper(), "language": language}
+    if config.TTS_VOICE_REF:
+        payload["ref_audio"] = config.TTS_VOICE_REF
+    return payload
+
+
 def init_tts() -> bool:
     """Load TTS engine. Called once at startup. Returns True if successful."""
     global _tts_ready, _engine, _kokoro_ready
@@ -177,9 +198,7 @@ def _cleanup_audio_dir():
     """Keep only the N most recent WAV files in audio/, delete the rest."""
     import config
 
-    audio_dir = Path("audio")
-    if not audio_dir.exists():
-        return
+    audio_dir = _audio_dir()
 
     keep = getattr(config, "AUDIO_KEEP_COUNT", 20)
     wav_files = sorted(audio_dir.glob("*.wav"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -192,13 +211,16 @@ def _cleanup_audio_dir():
             logger.warning(f"[tts] Failed to delete {old_file.name}: {e}")
 
 
-def split_sentences(text: str, min_chunk_chars: int = 40) -> list[str]:
+def split_sentences(text: str, min_chunk_chars: int | None = None) -> list[str]:
     """Split text into sentences for chunked TTS synthesis.
 
     Merges short sentences with neighbors so each chunk is at least
-    min_chunk_chars long. This avoids tiny fragments like "What?" being
-    synthesized alone.
+    min_chunk_chars long (default: config.TTS_MIN_CHUNK_CHARS, read at call time).
+    This avoids tiny fragments like "What?" being synthesized alone.
     """
+    if min_chunk_chars is None:
+        import config
+        min_chunk_chars = config.TTS_MIN_CHUNK_CHARS
     import re
     # Split on sentence-ending punctuation followed by space or end
     parts = re.split(r'(?<=[.!?。！？])\s+', text.strip())
@@ -283,7 +305,7 @@ def _synthesize_via_http_single(api_url: str, timeout: int, engine_name: str,
     try:
         resp = httpx.post(
             f"{api_url}/synthesize",
-            json={"text": text, "emotion": emotion.upper(), "language": language},
+            json=_tts_payload(text, emotion, language),
             timeout=timeout,
         )
         if resp.status_code != 200:
@@ -301,7 +323,7 @@ def _synthesize_via_http_single(api_url: str, timeout: int, engine_name: str,
 
         import uuid as _uuid
         filename = f"{_uuid.uuid4().hex[:12]}.wav"
-        filepath = Path("audio") / filename
+        filepath = _audio_dir() / filename
         filepath.parent.mkdir(exist_ok=True)
         filepath.write_bytes(wav_resp.content)
 
@@ -406,7 +428,7 @@ def _synthesize_omnivoice(text: str, emotion: str = "neutral", language: str = "
     try:
         resp = httpx.post(
             f"{config.OMNIVOICE_API_URL}/synthesize",
-            json={"text": clean, "emotion": emotion.upper(), "language": language},
+            json=_tts_payload(clean, emotion, language),
             timeout=config.OMNIVOICE_TIMEOUT,
         )
         if resp.status_code != 200:
@@ -423,7 +445,7 @@ def _synthesize_omnivoice(text: str, emotion: str = "neutral", language: str = "
             return None
 
         filename = f"{uuid.uuid4().hex}.wav"
-        filepath = Path("audio") / filename
+        filepath = _audio_dir() / filename
         filepath.parent.mkdir(exist_ok=True)
         filepath.write_bytes(wav_resp.content)
         _cleanup_audio_dir()
@@ -467,7 +489,7 @@ def _synthesize_cosyvoice(text: str, emotion: str = "neutral", language: str = "
             import httpx
             resp = httpx.post(
                 f"{config.COSYVOICE_API_URL}/synthesize",
-                json={"text": chunk, "emotion": emotion.upper(), "language": language},
+                json=_tts_payload(chunk, emotion, language),
                 timeout=config.COSYVOICE_TIMEOUT,
             )
             if resp.status_code != 200:
@@ -512,7 +534,7 @@ def _synthesize_cosyvoice(text: str, emotion: str = "neutral", language: str = "
         return None
 
     filename = f"{uuid.uuid4().hex}.wav"
-    filepath = Path("audio") / filename
+    filepath = _audio_dir() / filename
     filepath.write_bytes(combined)
     _cleanup_audio_dir()
     return f"/audio/{filename}"
@@ -642,8 +664,7 @@ def _synthesize_qwen3tts(text: str, emotion: str = "neutral") -> Optional[str]:
             return None
 
         # Save the WAV response
-        audio_dir = Path("audio")
-        audio_dir.mkdir(exist_ok=True)
+        audio_dir = _audio_dir()
         filename = f"{uuid.uuid4().hex}.wav"
         filepath = audio_dir / filename
 
@@ -699,8 +720,7 @@ def _synthesize_hf_space(text: str, emotion: str = "neutral") -> Optional[str]:
             return None
 
         # Copy to our audio directory
-        audio_dir = Path("audio")
-        audio_dir.mkdir(exist_ok=True)
+        audio_dir = _audio_dir()
         filename = f"{uuid.uuid4().hex}.wav"
         filepath = audio_dir / filename
 
@@ -744,8 +764,7 @@ def _synthesize_kokoro(text: str, voice: Optional[str] = None, speed: float = 1.
         )
 
         # Save to audio/ directory with a unique filename
-        audio_dir = Path("audio")
-        audio_dir.mkdir(exist_ok=True)
+        audio_dir = _audio_dir()
         filename = f"{uuid.uuid4().hex}.wav"
         filepath = audio_dir / filename
 

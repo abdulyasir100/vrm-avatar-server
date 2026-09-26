@@ -11,7 +11,8 @@ import asyncio
 from pathlib import Path
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError, BadRequestError
 from services import memory, tool_router, tool_registry, mood
-from services.claude_cli import query_claude_cli, stream_claude_cli, check_claude_cli
+from services.claude_cli import query_claude_cli, check_claude_cli
+from services import access, turn_context
 import config
 
 logger = logging.getLogger(__name__)
@@ -22,81 +23,61 @@ _system_prompt: str = ""
 def _interpolate(text: str) -> str:
     """Replace {{TOKENS}} in prompt text with live config values.
 
-    Lets prompt files (system.md, personality.md) stay character-agnostic:
-    {{CHARACTER_NAME}}, {{OWNER_NAME}}, {{OWNER_PRONOUN}}, {{TZ_LABEL}}, {{LANGUAGE}}.
-    Uses plain token replacement (not str.format) since prompts contain [TOOL:]/[HAPPY].
+    Keeps the prompt files character-agnostic. Plain replacement, not str.format —
+    prompts are full of [TOOL:] / [HAPPY] brackets.
     """
     if not text:
         return text
     return (text
             .replace("{{CHARACTER_NAME}}", config.CHARACTER_NAME)
+            .replace("{{CHARACTER_SHORT_NAME}}", config.CHARACTER_SHORT_NAME)
             .replace("{{OWNER_NAME}}", config.OWNER_NAME)
             .replace("{{OWNER_PRONOUN}}", config.OWNER_PRONOUN)
             .replace("{{TZ_LABEL}}", config.TZ_LABEL)
-            .replace("{{LANGUAGE}}", config.LANGUAGE))
+            .replace("{{LANGUAGE}}", config.get_language_name()))
 
 
-def _load_from_card(card_path: Path) -> str:
-    """Build system prompt from a character.json card."""
-    card = json.loads(card_path.read_text(encoding="utf-8"))
+def _read_prompt(path_str: str) -> str:
+    path = Path(path_str) if path_str else None
+    if not path or not path.is_file():
+        return ""
+    return _interpolate(path.read_text(encoding="utf-8").strip())
 
-    # Use card's system_prompt if provided, otherwise fall back to system.md
-    explicit = card.get("system_prompt", "").strip()
-    if explicit:
-        base_prompt = explicit
-    else:
-        md_path = Path(config.SYSTEM_PROMPT_PATH)
-        base_prompt = md_path.read_text(encoding="utf-8").strip() if md_path.exists() else ""
 
-    # Prepend structured metadata from card fields
-    parts = []
-    if card.get("name"):
-        parts.append(f"Character: {card['name']}")
-    if card.get("description"):
-        parts.append(f"Description: {card['description']}")
-    if card.get("personality"):
-        parts.append(f"Personality: {card['personality']}")
-    if card.get("scenario"):
-        parts.append(f"Scenario: {card['scenario']}")
-
-    preamble = "\n".join(parts)
-    if preamble and base_prompt:
-        full = preamble + "\n\n" + base_prompt
-    else:
-        full = preamble or base_prompt
-
-    logger.info(f"Loaded character card: {card.get('name', '?')} from {card_path} ({len(full)} chars)")
-    return _interpolate(full)
+def _card_preamble(card: dict) -> str:
+    labels = (("name", "Character"), ("description", "Description"),
+              ("personality", "Personality"), ("scenario", "Scenario"))
+    return "\n".join(f"{label}: {card[key]}" for key, label in labels if card.get(key))
 
 
 def load_system_prompt() -> str:
-    """Load system prompt from character.json (if present), else prompts/system.md."""
+    """Compose the system prompt: card preamble + personality file + owner file + system rules.
+
+    Every part is optional. A card's explicit `system_prompt` replaces the rules file.
+    """
     global _system_prompt
 
-    # Try character card first
+    card: dict = {}
     card_path = Path(config.CHARACTER_CARD_PATH)
     if card_path.exists():
         try:
-            _system_prompt = _load_from_card(card_path)
-            return _system_prompt
+            card = json.loads(card_path.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning(f"Failed to load character card {card_path}: {e}, falling back to system.md")
+            logger.warning(f"Failed to load character card {card_path}: {e}")
 
-    # Load personality + system prompt (split files)
-    parts = []
-    personality_path = Path("prompts/personality.md")
-    system_path = Path(config.SYSTEM_PROMPT_PATH)
-
-    if personality_path.exists():
-        parts.append(personality_path.read_text(encoding="utf-8").strip())
-        logger.info(f"Loaded personality from {personality_path}")
-    if system_path.exists():
-        parts.append(system_path.read_text(encoding="utf-8").strip())
-        logger.info(f"Loaded system rules from {system_path}")
+    named = [
+        ("card", _card_preamble(card)),
+        ("personality", _read_prompt(config.PERSONALITY_PROMPT_PATH)),
+        ("owner", _read_prompt(config.OWNER_PROMPT_PATH)),
+        ("rules", _interpolate(card.get("system_prompt", "").strip())
+                  or _read_prompt(config.SYSTEM_PROMPT_PATH)),
+    ]
+    parts = [(name, text) for name, text in named if text]
 
     if parts:
-        _system_prompt = _interpolate("\n\n".join(parts))
-        logger.info(f"System prompt: {len(_system_prompt)} chars (personality + system rules)")
+        _system_prompt = "\n\n".join(text for _, text in parts)
+        sizes = ", ".join(f"{name} {len(text)}" for name, text in parts)
+        logger.info(f"System prompt: {len(_system_prompt)} chars ({sizes})")
     else:
         _system_prompt = "You are a helpful assistant. Prefix every reply with an emotion tag like [HAPPY] on its own line."
         logger.warning("No prompt files found, using fallback")
@@ -312,6 +293,14 @@ def parse_bilingual(text: str) -> tuple[str, str | None]:
             en_text = match.group(1).strip()
             jp_text = match.group(2).strip()
 
+    # LLM sometimes drops the "en:" marker on background/inner-thought replies:
+    # "<english> jp: <japanese>". Everything before the lone jp: is the English half.
+    if not (en_text and jp_text):
+        match = re.search(r'(?i)^(.+?)\s*\bjp:\s*(.+)$', text.strip(), flags=re.DOTALL)
+        if match and match.group(1).strip():
+            en_text = match.group(1).strip()
+            jp_text = match.group(2).strip()
+
     if en_text and jp_text:
         return en_text, jp_text
 
@@ -437,33 +426,90 @@ def _clean_reply_text(text: str, skip_truncate: bool = False) -> str:
     return text
 
 
-def _detect_mode(message: str, has_tool_match: bool) -> str:
+# --- Code-mode gating -------------------------------------------------------
+# Code mode hands her Opus + write access to the sandbox, so it must only fire
+# on an unambiguous instruction. Three layers, in order: blockers (talking
+# *about* dev work), directive (the message is actually addressed at her as a
+# request), then the topic match.
+
+# Framing that means "chatting about it", never "go do it".
+_CODE_BLOCKERS = [
+    # first-person intent / narration — the user is the one doing it
+    r"\b(?:i|we)\s*(?:'m|'ll|'ve|am|will|was|were|have|had)?\s*"
+    r"(?:wanna|want\s+to|gonna|going\s+to|plan(?:ning)?\s+to|need\s+to|tried\s+to|used\s+to|should|might|maybe|"
+    r"built|coded|made|making|wrote|writing|fixed|fixing|added|adding|deployed|deploying|updated|updating)\b",
+    # asking for an opinion, not an action
+    r"\b(?:should|shall|can|could)\s+(?:i|we)\b",
+    r"\b(?:what if|how about|what about|imagine|remember when|i wish|is it worth|do you think|"
+    r"do you know|do you remember|what do you think)\b",
+    # hypothetical / far-future framing
+    r"\b(?:someday|one day|eventually|if i ever|kinda want|sounds fun|would be cool|would be nice)\b",
+]
+
+# The message has to be pointed at her: nickname prefix, an explicit request
+# form, or a bare imperative opening the message.
+_CODE_DIRECTIVE = [
+    r"\b(?:can|could|would)\s+you\b",
+    r"\b(?:please|pls)\b",
+    r"\b(?:i|we)\s+(?:want|need)\s+you\s+to\b",
+    r"\bgo\s+(?:ahead\s+and\s+)?(?:build|code|write|make|fix|add|implement|work)\b",
+    r"^\s*(?:go\s+)?(?:build|code|write|make|fix|debug|add|implement|refactor|rewrite|update|create|scaffold)\b",
+]
+
+# What counts as dev work once we know she's being told to do something.
+# A bare sandbox/project NAME is deliberately not a topic on its own — merely
+# talking about astral-idols is chat; "go work on astral-idols" is the job.
+_CODE_TOPICS = [
+    r"\b(?:build|code|create|make|making|write|develop|invent|design|add|edit|modify|update|implement|refactor|scaffold)\b"
+    r".*\b(?:app|script|tool|bot|page|website|site|program|game|monster\w*|move\w*|species|file|json|config|repo|project|sandbox|plugin|endpoint|function|class|module)\b",
+    r"\b(?:fix|debug|refactor|rewrite)\b.*\b(?:code|script|bug|error|file|function|test)\b",
+    r"\bgo\s+(?:to|into|work\s+on)\s+\S*(?:sandbox|repo|project|astral|game)\b",
+    r"\bwork\s+on\s+(?:the\s+)?(?:game|plugin|service|backend|sandbox)\b",
+]
+
+
+def _is_code_request(message: str, is_system: bool = False) -> bool:
+    """True only when the user is clearly telling her to go write code.
+
+    Guards against her wandering off into the sandbox on casual dev talk:
+    the message must be free of "just chatting" framing, be addressed to her
+    as a request, and be about dev work. System-authored prompts (scheduled
+    dev sessions, background tasks) skip the directive check — they are the
+    instruction, not a user aside.
+    """
+    msg = message.lower()
+
+    if not any(re.search(p, msg) for p in _CODE_TOPICS):
+        return False
+
+    if any(re.search(p, msg) for p in _CODE_BLOCKERS):
+        logger.info("[llm] code-mode declined: dev topic but chat framing")
+        return False
+
+    from services.plugin_loader import has_intent_prefix
+    if not is_system and not (has_intent_prefix(message) or any(re.search(p, msg) for p in _CODE_DIRECTIVE)):
+        logger.info("[llm] code-mode declined: dev topic but no directive")
+        return False
+
+    return True
+
+
+def _detect_mode(message: str, has_tool_match: bool, is_system: bool = False, allow_code: bool = True) -> str:
     """Return 'fast', 'smart', or 'code' based on message content.
 
     Code-mode checks run BEFORE has_tool_match, so explicit sandbox/dev
     requests override incidental tool trigger matches (e.g. a message that
     mentions 'memory' shouldn't force fast mode if it's really a code task).
+
+    allow_code=False closes code mode for this turn: the access tier is below
+    administrator, or it is an unattended turn without an opt-in (services/access.py).
     """
     msg = message.lower()
 
-    # Explicit mention of the code sandbox or its projects → code mode, always
-    sandbox_pattern = (
-        r"\b(?:companion[\s\-_]?sandbox|astral[\s\-_]?idols)\b"
-    )
-    if re.search(sandbox_pattern, msg):
-        return "code"
-
-    # Verb × dev-object patterns
-    code_patterns = [
-        r"\b(build|code|create|mak\w*|write|develop|invent|design|add|edit|modify|update|implement|refactor|scaffold)\b"
-        r".*\b(app|script|tool|bot|page|website|site|program|game|monster\w*|move\w*|species|file|json|config|repo|project|sandbox|plugin|endpoint|function|class|module)\b",
-        r"\b(fix|debug|refactor|rewrite)\b.*\b(code|script|bug|error|file|function|test)\b",
-        r"\b(deploy|dockerize|dockerfile|restart)\b.*\b(service|server|container|image)\b",
-        r"\bgo\s+(?:to|into|work\s+on)\s+\S*(?:sandbox|repo|project|astral|game)\b",
-        r"\bwork\s+on\s+(?:the\s+)?(?:game|plugin|service|backend|sandbox)\b",
-    ]
-    if any(re.search(p, msg) for p in code_patterns):
-        return "code"
+    if _is_code_request(message, is_system=is_system):
+        if allow_code:
+            return "code"
+        logger.info("[llm] code-mode declined: access tier (or unattended turn without opt-in)")
 
     if has_tool_match:
         return "fast"
@@ -501,20 +547,30 @@ async def _chat_with_claude_cli(
         allowed_tools=tools,
         cwd=cwd,
     )
+    return _parse_cli_reply(raw, tag="claude_cli")
+
+
+def _parse_cli_reply(raw: str | None, tag: str) -> dict | None:
+    """Turn raw agent-CLI text into the standard result dict.
+
+    Shared by every agentic-CLI backend — the text-tag tool syntax and emotion
+    markers come from the system prompt, not from whichever binary produced the
+    text, so the parsing is identical.
+    """
     if not raw:
         return None
 
     # Parse tool call (text-tag mode)
     tool_name, tool_arg, remainder = parse_tool_call(raw)
     if tool_name:
-        logger.info(f"[claude_cli] Tool call: {tool_name}({tool_arg})")
+        logger.info(f"[{tag}] Tool call: {tool_name}({tool_arg})")
 
-    # Parse emotion — skip sentence truncation (Claude handles length well)
+    # Parse emotion — skip sentence truncation (frontier models handle length well)
     emotion, clean_reply = parse_emotion(remainder)
     clean_reply = _strip_thinking_preamble(clean_reply)
     clean_reply = _clean_reply_text(clean_reply, skip_truncate=True)
 
-    logger.info(f"[claude_cli] Parsed: [{emotion}] {clean_reply[:80]}...")
+    logger.info(f"[{tag}] Parsed: [{emotion}] {clean_reply[:80]}...")
 
     return {
         "reply": clean_reply,
@@ -525,115 +581,49 @@ async def _chat_with_claude_cli(
     }
 
 
-async def _stream_chat_with_claude_cli(
-    messages: list[dict],
-    model: str,
-    effort: str,
-    timeout: int,
-    tools: str,
-    on_sentence: callable = None,
-) -> dict | None:
-    """Stream Claude CLI response with sentence callbacks for TTS.
-
-    Streams text deltas, accumulates them, and calls on_sentence(text)
-    for each complete sentence as it arrives. Returns the same result dict
-    as _chat_with_claude_cli() once complete.
-
-    The on_sentence callback receives raw sentence text (before tool/emotion
-    parsing). The first sentence will contain the [TOOL:...][EMOTION] prefix —
-    the caller should parse and strip it.
-    """
-    full_text = ""
-    sentence_count = 0
-
-    async for event in stream_claude_cli(
-        messages=messages,
-        model=model,
-        effort=effort,
-        timeout=timeout,
-        allowed_tools=tools,
-    ):
-        if event["type"] == "sentence":
-            sentence_count += 1
-            if on_sentence:
-                await on_sentence(event["text"], sentence_count)
-        elif event["type"] == "done":
-            full_text = event["full_text"]
-
-    if not full_text:
-        return None
-
-    # Parse tool call and emotion from the full text (same as non-streaming)
-    tool_name, tool_arg, remainder = parse_tool_call(full_text)
-    if tool_name:
-        logger.info(f"[claude_cli:stream] Tool call: {tool_name}({tool_arg})")
-
-    emotion, clean_reply = parse_emotion(remainder)
-    clean_reply = _strip_thinking_preamble(clean_reply)
-    clean_reply = _clean_reply_text(clean_reply, skip_truncate=True)
-
-    logger.info(f"[claude_cli:stream] Parsed: [{emotion}] {clean_reply[:80]}... ({sentence_count} sentences streamed)")
-
-    return {
-        "reply": clean_reply,
-        "emotion": emotion,
-        "audio_url": None,
-        "tool_name": tool_name,
-        "tool_arg": tool_arg,
-    }
-
-
-async def chat_streaming(
+async def _try_agent_cli_fallback(
+    mode: str,
     message: str,
-    context: str = "telegram",
-    user_name: str = "User",
-    on_sentence: callable = None,
+    context: str,
+    user_name: str,
     reply_to: str | None = None,
     is_system_prompt: bool = False,
-) -> dict:
-    """Streaming variant of chat() for fast mode.
+) -> dict | None:
+    """Retry a failed primary-CLI turn through the secondary agent CLI.
 
-    Calls on_sentence(text, index) for each complete sentence as it streams
-    from Claude. Falls back to regular chat() if not in Claude fast mode.
-
-    Returns the same result dict as chat().
+    Runs before the plain-API fallback chain so the companion keeps its full
+    personality and tool vocabulary when Claude is rate-limited, rather than
+    dropping straight to a terser model. Returns None when disabled or failed.
     """
-    # Only use streaming for Claude fast mode
-    if config.LLM_PROVIDER == "claude":
-        has_tool_match = bool(tool_router.get_relevant_tools(message))
-        mode = _detect_mode(message, has_tool_match)
+    if config.AGENT_CLI_FALLBACK != "opencode":
+        return None
 
-        if mode == "fast":
-            if config.CLAUDE_USE_SDK:
-                # SDK path is non-streaming at the LLM level (the agentic loop owns
-                # tool calls). Run it, then emit the completed reply's sentences so
-                # TTS still chunks. Trades early-first-sentence latency for native tools.
-                from services import claude_agent
-                result = await claude_agent.run_agent(
-                    message, context, user_name,
-                    reply_to=reply_to, is_system_prompt=is_system_prompt,
-                    model=config.get_llm_model(),
-                )
-                if result:
-                    if on_sentence and result.get("reply"):
-                        sentences = [s for s in re.split(r'(?<=[.!?。！？])\s', result["reply"]) if s.strip()]
-                        for i, s in enumerate(sentences, 1):
-                            await on_sentence(s.strip(), i)
-                    return result
-                logger.warning("[llm] SDK streaming path failed, falling back to regular chat")
-            else:
-                messages = _build_messages(message, context, user_name, False, reply_to=reply_to, is_system_prompt=is_system_prompt)
-                result = await _stream_chat_with_claude_cli(
-                    messages, config.get_llm_model(),
-                    config.CLAUDE_CLI_EFFORT, config.CLAUDE_CLI_TIMEOUT, "",
-                    on_sentence=on_sentence,
-                )
-                if result:
-                    return result
-                logger.warning("[llm] Claude CLI streaming failed, falling back to regular chat")
+    from services import opencode_cli
 
-    # Fall back to regular (non-streaming) chat for non-fast modes or failures
-    return await chat(message, context, user_name, reply_to=reply_to, is_system_prompt=is_system_prompt)
+    if mode == "code":
+        messages = _build_code_messages(message, context, user_name)
+        model, timeout = config.OPENCODE_CODE_MODEL, config.OPENCODE_CODE_TIMEOUT
+        cwd = config.CLAUDE_CLI_SANDBOX_PATH
+    elif mode == "smart":
+        messages = _build_smart_messages(message, context, user_name, reply_to=reply_to)
+        model, timeout, cwd = config.OPENCODE_MODEL, config.OPENCODE_TIMEOUT, None
+    else:
+        messages = _build_messages(
+            message, context, user_name, False,
+            reply_to=reply_to, is_system_prompt=is_system_prompt,
+        )
+        model, timeout, cwd = config.OPENCODE_MODEL, config.OPENCODE_TIMEOUT, None
+
+    logger.info(f"[llm] Trying agent CLI fallback: opencode ({model}, mode={mode})")
+    raw = await opencode_cli.query_opencode_cli(
+        messages=messages,
+        model=model,
+        variant=config.OPENCODE_VARIANT,
+        timeout=timeout,
+        agent=config.OPENCODE_AGENT,
+        cwd=cwd,
+    )
+    return _parse_cli_reply(raw, tag="opencode_cli")
 
 
 def _get_smart_system_prompt() -> str:
@@ -643,31 +633,24 @@ Rules:
 - Start EVERY reply with ONE emotion tag: [HAPPY], [SAD], [SURPRISED], [ANGRY], [THINKING], or [NEUTRAL]
 - Be concise but thorough — no filler
 - Stay in character but prioritize the answer
-- Speak in English only"""
+- Speak in {config.get_language_name()} only"""
 
 
 def _get_code_system_prompt() -> str:
     sandbox = config.CLAUDE_CLI_SANDBOX_PATH
-    deploy_url = config.SANDBOX_DEPLOY_URL
     return f"""You are {config.CHARACTER_NAME}, an AI companion helping with coding tasks. Confident and competent.
 
 Environment:
-- You are running inside a Docker container on the host server
+- You are running on a Linux server inside a Docker container
 - Sandbox: {sandbox} — ALL files go here
 - ALWAYS write files using absolute paths under {sandbox}/
-
-Deployment:
-- After building a web project, deploy it by running: python3 {sandbox}/deploy.py {sandbox}/<app-name>
-- The deploy script auto-generates Dockerfile + docker-compose.yml for static sites (nginx)
-- If you need a custom Dockerfile (e.g. Node.js app), write it yourself before deploying
-- Deployed apps are reachable at: {deploy_url}
-- ALWAYS deploy after building — don't just tell the user the command, run it yourself
+- You cannot build images or start containers from here; if something needs deploying, say so and stop
 
 Rules:
 - Start EVERY reply with ONE emotion tag: [HAPPY], [SAD], [SURPRISED], [ANGRY], [THINKING], or [NEUTRAL]
 - Focus on the code — build, fix, or explain as requested
 - Keep non-code commentary to 1-2 sentences max
-- Speak in English only"""
+- Speak in {config.get_language_name()} only"""
 
 _FUNCTION_CALLING_ADDENDUM = """
 IMPORTANT RULES FOR TOOL USE:
@@ -689,7 +672,8 @@ CRITICAL — TOOL CALLING BEHAVIOR:
 
 
 async def _chat_with_function_calling(client, messages: list, system_prompt: str,
-                                       allowed_tools: set[str] | None = None) -> dict:
+                                       allowed_tools: set[str] | None = None,
+                                       model: str | None = None) -> dict:
     """Chat using native OpenAI function calling (for cloud providers like Groq).
 
     If allowed_tools is provided, only those tool schemas are passed to the model.
@@ -707,10 +691,10 @@ async def _chat_with_function_calling(client, messages: list, system_prompt: str
         messages[0]["content"] += _FUNCTION_CALLING_ADDENDUM
 
     kwargs = dict(
-        model=config.get_llm_model(),
+        model=model or config.get_llm_model(),
         messages=messages,
-        temperature=0.7,
-        max_tokens=200,
+        temperature=config.LLM_TEMPERATURE,
+        max_tokens=config.LLM_MAX_TOKENS,
     )
     if openai_tools:
         kwargs["tools"] = openai_tools
@@ -771,15 +755,15 @@ async def _chat_with_function_calling(client, messages: list, system_prompt: str
     }
 
 
-async def _chat_with_text_tags(client, messages: list) -> dict:
+async def _chat_with_text_tags(client, messages: list, model: str | None = None) -> dict:
     """Chat using text-tag parsing (for local providers like LM Studio)."""
     response = await asyncio.wait_for(
         asyncio.to_thread(
             client.chat.completions.create,
-            model=config.get_llm_model(),
+            model=model or config.get_llm_model(),
             messages=messages,
-            temperature=0.7,
-            max_tokens=200,
+            temperature=config.LLM_TEMPERATURE,
+            max_tokens=config.LLM_MAX_TOKENS,
         ),
         timeout=config.LLM_TIMEOUT + 5,
     )
@@ -860,7 +844,7 @@ def _build_messages(message: str, context: str, user_name: str, use_function_cal
             system_prompt += "\n\n" + tools_block
             logger.info(f"[llm] Tools injected for message: {matched_tools}")
 
-    core_memories_block = memory.format_core_memories_for_prompt()
+    core_memories_block = memory.format_core_memories_for_prompt(message)
     if core_memories_block:
         system_prompt += core_memories_block
 
@@ -872,7 +856,7 @@ def _build_messages(message: str, context: str, user_name: str, use_function_cal
     if mood_modifier:
         system_prompt += mood_modifier
 
-    # avatar-phone context — so the character knows what's on their own phone
+    # avatar-phone context — so the character knows what's on her own phone
     # (contacts, last messages, today's PIN, top reminders, latest diary mood).
     phone_ctx = get_phone_context()
     if phone_ctx:
@@ -943,7 +927,7 @@ def _build_smart_messages(message: str, context: str, user_name: str, reply_to: 
     """Build compact messages for smart mode — personality + memories + history, no tools."""
     system_prompt = _get_smart_system_prompt()
 
-    core_memories_block = memory.format_core_memories_for_prompt()
+    core_memories_block = memory.format_core_memories_for_prompt(message)
     if core_memories_block:
         system_prompt += core_memories_block
 
@@ -1010,6 +994,8 @@ async def _try_provider(provider: str, base_url: str, api_key: str, model: str,
             effort=config.CLAUDE_CLI_EFFORT,
             timeout=config.CLAUDE_CLI_TIMEOUT, tools="",
         )
+    # The model is passed per call — never swap the global config.LLM_MODEL, which
+    # raced with concurrent turns reading get_llm_model().
     try:
         client = OpenAI(
             base_url=base_url,
@@ -1017,26 +1003,17 @@ async def _try_provider(provider: str, base_url: str, api_key: str, model: str,
             timeout=config.LLM_TIMEOUT,
             max_retries=1,
         )
-        # Override model for this call
-        orig_model = config.LLM_MODEL
-        config.LLM_MODEL = model
-
         if use_function_calling:
-            result = await _chat_with_function_calling(
-                client, [m.copy() for m in messages], "", allowed_tools=allowed_tools
+            return await _chat_with_function_calling(
+                client, [m.copy() for m in messages], "",
+                allowed_tools=allowed_tools, model=model,
             )
-        else:
-            result = await _chat_with_text_tags(client, [m.copy() for m in messages])
-
-        config.LLM_MODEL = orig_model
-        return result
+        return await _chat_with_text_tags(client, [m.copy() for m in messages], model=model)
 
     except (APIConnectionError, APITimeoutError, RateLimitError, asyncio.TimeoutError) as e:
-        config.LLM_MODEL = orig_model
         logger.warning(f"LLM ({provider}) failed: {e}")
         return None
     except BadRequestError as e:
-        config.LLM_MODEL = orig_model
         # Try to salvage from failed_generation (Groq quirk)
         error_body = getattr(e, "body", {}) or {}
         failed_gen = error_body.get("failed_generation", "") if isinstance(error_body, dict) else ""
@@ -1054,9 +1031,16 @@ async def _try_provider(provider: str, base_url: str, api_key: str, model: str,
         logger.warning(f"LLM ({provider}) BadRequest: {e}")
         return None
     except Exception as e:
-        config.LLM_MODEL = orig_model
         logger.error(f"LLM ({provider}) error: {e}")
         return None
+
+
+def _turn_class(context: str, user_name: str, is_system_prompt: bool) -> str:
+    """Trust context of this turn. A system-authored prompt is never a chat turn."""
+    turn_class = turn_context.classify({"context": context, "user_name": user_name})
+    if is_system_prompt and turn_class == turn_context.CHAT:
+        return turn_context.BACKGROUND
+    return turn_class
 
 
 def _resolve_allowed_tools(message: str, is_system_prompt: bool) -> set[str]:
@@ -1068,7 +1052,7 @@ def _resolve_allowed_tools(message: str, is_system_prompt: bool) -> set[str]:
     """
     mode = config.TOOL_CALL_MODE
 
-    if mode == "off":
+    if mode == "off" or not access.allows("tools"):
         return set()
     if mode == "semi_off" and not is_system_prompt:
         return set()
@@ -1083,12 +1067,16 @@ def _resolve_allowed_tools(message: str, is_system_prompt: bool) -> set[str]:
     return relevant
 
 
-async def chat(message: str, context: str = "telegram", user_name: str = "User", image_path: str | None = None, reply_to: str | None = None, is_system_prompt: bool = False) -> dict:
+async def chat(message: str, context: str = "telegram", user_name: str = "User", image_path: str | None = None, reply_to: str | None = None, is_system_prompt: bool = False, allow_code_mode: bool = False) -> dict:
     """
     Send a message to the LLM with fallback chain.
 
     Tries: primary → fallback_1 → fallback_2 → offline reply.
     Cloud providers use native function calling; local use text-tag parsing.
+
+    allow_code_mode only matters on autonomous turns: those reach code mode
+    solely through this explicit opt-in (a scheduled_action's manifest flag),
+    never through keywords in the prompt — prompts embed untrusted text.
 
     Returns: {"reply": str, "emotion": str, "audio_url": None,
               "tool_name": str|None, "tool_arg": str|None}
@@ -1105,7 +1093,8 @@ async def chat(message: str, context: str = "telegram", user_name: str = "User",
     # Claude CLI mode-aware routing
     if config.LLM_PROVIDER == "claude":
         has_tool_match = bool(tool_router.get_relevant_tools(message))
-        mode = _detect_mode(message, has_tool_match)
+        allow_code = access.allows("code", _turn_class(context, user_name, is_system_prompt), elevated=allow_code_mode)
+        mode = _detect_mode(message, has_tool_match, is_system=is_system_prompt, allow_code=allow_code)
         logger.info(f"[llm] Claude mode: {mode} (tool_match={has_tool_match}, image={'yes' if image_path else 'no'})")
 
         # Force fast mode for image messages (needs Read tool)
@@ -1153,7 +1142,17 @@ async def chat(message: str, context: str = "telegram", user_name: str = "User",
 
         if result:
             return result
-        logger.warning("[llm] Claude CLI failed, falling through to fallbacks")
+        logger.warning("[llm] Claude CLI failed, trying agent CLI fallback")
+
+        # Second agentic CLI (opencode) before the plain-API chain — keeps the
+        # full personality and tool vocabulary when Claude is rate-limited.
+        # Uses the original message: like the API fallbacks, it gets no image.
+        result = await _try_agent_cli_fallback(
+            mode, message, context, user_name,
+            reply_to=reply_to, is_system_prompt=is_system_prompt,
+        )
+        if result:
+            return result
 
     else:
         use_fc = _is_cloud_provider()

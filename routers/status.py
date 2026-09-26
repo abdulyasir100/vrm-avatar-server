@@ -3,6 +3,7 @@
 import time
 from fastapi import APIRouter
 from services import llm, tts_service, stt_service, memory, background, message_queue, ntfy, freshrss, calendar_service, prayer, sleep, mood
+from services import auth
 from services.ws_manager import manager
 import config
 
@@ -24,8 +25,10 @@ async def get_status():
     return {
         "server": "ok",
         "character_name": config.CHARACTER_NAME,
+        "instance": config.CHARACTER_ID or "default",
         "llm": lm_status,
         "llm_provider": config.LLM_PROVIDER,
+        "admin_auth": "on" if auth.is_set("ADMIN_KEY") else "off",
         "tts": "disabled" if not config.TTS_ENABLED else ("ok" if tts_service.is_ready() else "error"),
         "stt": "disabled" if not config.STT_ENABLED else ("ok" if stt_service.is_ready() else "error"),
         "telegram_notify": telegram_notify_status,
@@ -39,6 +42,7 @@ async def get_status():
         "memory": {
             "total_messages": memory.get_message_count(),
             "core_memories": len(memory.get_core_memories()),
+            "brain": config.BRAIN_BACKEND,
             "session": memory.get_current_session_id(),
         },
     }

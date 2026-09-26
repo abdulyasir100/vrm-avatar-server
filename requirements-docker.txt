@@ -20,7 +20,21 @@ tinytuya>=1.14.0
 # Claude Agent SDK — native tool calling via in-process MCP server (CLAUDE_USE_SDK).
 # Pin starlette<0.47: the SDK's `mcp` dep otherwise pulls starlette 1.x, which breaks
 # FastAPI 0.115.12 (Router.__init__ no longer accepts on_startup). mcp runs fine on 0.46.
-claude-agent-sdk>=0.2.105
+# Pinned: the SDK spawns its OWN bundled CLI (not the npm-pinned one in the Dockerfile),
+# so an unpinned SDK silently changes the CLI on every rebuild.
+claude-agent-sdk==0.2.152
 starlette<0.47
-
-tzdata
+# Multi-target notification fan-out (Discord, desktop, ntfy, ...). See services/ntfy.py.
+apprise>=1.9.0
+# Second brain, postgres backend only (services/brain). Imported lazily: BRAIN_BACKEND=sqlite never touches it.
+psycopg[binary]>=3.2
+# Google plugin (plugins/google): Gmail + Calendar. Pins follow Hermes Agent's google extra.
+google-api-python-client==2.194.0
+google-auth==2.55.1
+google-auth-oauthlib==1.3.1
+google-auth-httplib2==0.3.1
+httplib2==0.32.0
+# IANA timezone database for zoneinfo (utils/time.py). Python's stdlib zoneinfo
+# has no bundled data on some platforms (notably Windows) — this makes lookups
+# work everywhere without relying on OS tzdata.
+tzdata>=2024.1

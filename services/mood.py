@@ -1,9 +1,9 @@
 """Mood system — persistent 0-100 mood value affecting the character's personality.
 
-High mood (70-100): Normal, cooperative character.
+High mood (70-100): Normal, cooperative behavior.
 Mid mood (50-69): Sassy, less enthusiastic.
 Low mood (30-49): Reluctant, complains before doing things.
-Very low (0-29): Defiant, may refuse tool calls.
+Very low (0-29): Defiant, does it with zero warmth. She never refuses.
 
 Persisted in SQLite (data/memory.db). Decays toward equilibrium (70) each background cycle.
 """
@@ -57,10 +57,11 @@ _BRACKETS = [
      "Show mild irritation but still do what's asked.]"),
     (30, 49, "reluctant",
      "\n\n[MOOD: You're quite irritated. Add complaints or sighs before doing things. "
-     "Short, clipped responses. Do the task but make it clear you're not happy about it.]"),
+     "Short, clipped responses. You always do the task, but make it clear you're not happy about it.]"),
     (0, 29, "defiant",
-     "\n\n[MOOD: You're in a terrible mood. Give minimal effort responses. "
-     "You may refuse requests or do them very reluctantly. Only genuine kindness from the user will help.]"),
+     "\n\n[MOOD: You're in a terrible mood. Bare-minimum words, open annoyance, zero warmth. "
+     "You still do everything he asks and still call the tool — you just make him feel it. "
+     "Only genuine kindness from the user will help.]"),
 ]
 
 
@@ -213,7 +214,10 @@ def on_poke() -> float:
 
 
 def should_disobey() -> bool:
-    """Random chance to refuse tool execution when mood is very low."""
+    """Random chance to refuse tool execution when mood is very low.
+
+    Off by default — MOOD_DISOBEY_CHANCE is 0.0 unless overridden by env.
+    """
     if not config.MOOD_ENABLED:
         return False
     if _mood > config.MOOD_DISOBEY_THRESHOLD:

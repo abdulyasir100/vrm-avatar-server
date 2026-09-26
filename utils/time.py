@@ -9,9 +9,15 @@ Resolution is lazy (inside the functions) so it reflects `config.load_character(
 which runs during app startup — after this module is first imported.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone, tzinfo
 
 import config
+
+logger = logging.getLogger(__name__)
+
+# Warn at most once per unknown/unsupported TIMEZONE value, not every call.
+_warned_bad_timezones: set[str] = set()
 
 
 def get_tz() -> tzinfo:
@@ -27,8 +33,13 @@ def get_tz() -> tzinfo:
             from zoneinfo import ZoneInfo
             return ZoneInfo(name)
         except Exception:
-            # zoneinfo missing (no tzdata on Windows) or bad name → use offset
-            pass
+            # zoneinfo missing (no tzdata on Windows) or bad name -> use offset
+            if name not in _warned_bad_timezones:
+                _warned_bad_timezones.add(name)
+                logger.warning(
+                    "TIMEZONE=%r is not a known IANA name; falling back to "
+                    "TZ_OFFSET_HOURS=%s", name, getattr(config, "TZ_OFFSET_HOURS", 0.0)
+                )
     return timezone(timedelta(hours=getattr(config, "TZ_OFFSET_HOURS", 0.0)))
 
 

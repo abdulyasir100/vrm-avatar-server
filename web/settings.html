@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2032%2032%22%3E%3Crect%20width=%2232%22%20height=%2232%22%20rx=%227%22%20fill=%22%231e1e2e%22/%3E%3Cpath%20d=%22M7%2011h18M7%2021h18%22%20stroke=%22%236c7086%22%20stroke-width=%222.4%22%20stroke-linecap=%22round%22/%3E%3Ccircle%20cx=%2212%22%20cy=%2211%22%20r=%223.8%22%20fill=%22%2389b4fa%22/%3E%3Ccircle%20cx=%2220%22%20cy=%2221%22%20r=%223.8%22%20fill=%22%23f9e2af%22/%3E%3C/svg%3E">
+<title>Settings</title>
+<style>
+  :root {
+    --base: #1e1e2e; --mantle: #181825; --surface: #313244; --overlay: #45475a;
+    --text: #cdd6f4; --subtext: #a6adc8; --accent: #89b4fa; --green: #a6e3a1;
+    --red: #f38ba8; --yellow: #f9e2af; --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(1200px 600px at 20% -10%, #2a2a4a 0%, var(--mantle) 60%) fixed var(--mantle);
+         color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+  h1 { margin: 0; font-size: 24px; font-weight: 650; }
+  h1 small { color: var(--subtext); font-size: 14px; font-weight: 400; margin-left: 6px; }
+  h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--subtext); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  .chip { padding: 3px 10px; border-radius: 999px; background: var(--surface); font-size: 12.5px; color: var(--subtext); }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.ok b { color: var(--green); } .chip.bad b { color: var(--red); } .chip.warn b { color: var(--yellow); }
+  nav { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--surface); }
+  nav button { background: none; border: 0; color: var(--subtext); padding: 9px 14px; font: inherit; cursor: pointer;
+               border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  nav button.active { color: var(--text); border-color: var(--accent); }
+  section.card { background: rgba(49, 50, 68, .55); border: 1px solid rgba(205, 214, 244, .07); border-radius: var(--radius);
+                 padding: 16px 18px; margin-bottom: 14px; backdrop-filter: blur(6px); }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 6px 18px; align-items: center; padding: 11px 0;
+         border-top: 1px solid rgba(205, 214, 244, .06); }
+  .row:first-of-type { border-top: 0; }
+  .key { font-weight: 600; font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; }
+  .help { color: var(--subtext); font-size: 13px; grid-column: 1; }
+  .control { grid-row: 1 / span 2; grid-column: 2; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(249, 226, 175, .14); color: var(--yellow);
+           margin-left: 8px; font-family: system-ui, sans-serif; font-weight: 500; }
+  input[type=number], input[type=text], input[type=password], select {
+    background: var(--mantle); color: var(--text); border: 1px solid var(--overlay); border-radius: 8px; padding: 6px 9px;
+    font: inherit; min-width: 0; }
+  input[type=number] { width: 96px; } input[type=text] { width: 190px; } select { max-width: 200px; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .switch { position: relative; width: 44px; height: 24px; flex: none; }
+  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; position: absolute; z-index: 1; }
+  .switch span { position: absolute; inset: 0; background: var(--overlay); border-radius: 999px; transition: background .15s; }
+  .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+                        background: var(--text); transition: transform .15s; }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::after { transform: translateX(20px); background: var(--mantle); }
+  button.small { background: none; border: 1px solid var(--overlay); color: var(--subtext); border-radius: 8px; padding: 4px 9px;
+                 font: inherit; font-size: 12.5px; cursor: pointer; }
+  button.small:hover { color: var(--text); border-color: var(--subtext); }
+  button.primary { background: var(--accent); color: var(--mantle); border: 0; border-radius: 8px; padding: 7px 14px; font: inherit;
+                   font-weight: 600; cursor: pointer; }
+  .plugin { display: grid; grid-template-columns: 1fr; gap: 2px; padding: 10px 0; border-top: 1px solid rgba(205, 214, 244, .06); }
+  .plugin:first-of-type { border-top: 0; }
+  .plugin .cmds { color: var(--subtext); font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; word-break: break-word; }
+  .plugin-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .plugin details { margin-top: 6px; }
+  .plugin details summary { cursor: pointer; color: var(--subtext); font-size: 12.5px; }
+  .plugin .row { padding-left: 8px; }
+  #gate { max-width: 420px; margin: 12vh auto 0; text-align: center; }
+  #gate input { width: 100%; margin: 12px 0; padding: 10px 12px; }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px); background: var(--surface);
+           border: 1px solid var(--overlay); padding: 9px 16px; border-radius: 10px; opacity: 0; transition: .2s; pointer-events: none;
+           max-width: calc(100vw - 32px); }
+  #toast.show { opacity: 1; transform: translateX(-50%); } #toast.error { border-color: var(--red); color: var(--red); }
+  .muted { color: var(--subtext); }
+  [hidden] { display: none !important; }
+  @media (max-width: 560px) {
+    .row { grid-template-columns: 1fr; } .control { grid-row: auto; grid-column: 1; justify-content: flex-start; }
+    .chips { margin-left: 0; } input[type=text] { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div id="gate" hidden>
+    <h1>Settings</h1>
+    <p class="muted">This server protects its settings with an admin key (<code>ADMIN_KEY</code> in its <code>.env</code>).
+      It is kept in this browser only.</p>
+    <form id="gate-form">
+      <input type="password" id="gate-key" placeholder="Admin key" autocomplete="current-password" required>
+      <button class="primary" type="submit">Open</button>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header>
+      <h1><span id="character">…</span><small id="instance"></small></h1>
+      <div class="chips" id="health"></div>
+    </header>
+    <nav>
+      <button data-tab="settings" class="active">Settings</button>
+      <button data-tab="plugins">Plugins</button>
+      <button data-tab="session">Session</button>
+    </nav>
+    <div id="tab-settings"></div>
+    <div id="tab-plugins" hidden></div>
+    <div id="tab-session" hidden>
+      <section class="card">
+        <h2>Sleep</h2>
+        <div class="row"><div><div class="key">sleep_force</div><div class="help" id="sleep-state">…</div></div>
+          <div class="control"><button class="small" data-sleep="on">Put to sleep</button><button class="small" data-sleep="off">Wake up</button></div></div>
+      </section>
+      <section class="card">
+        <h2>This browser</h2>
+        <div class="row"><div><div class="key">admin key</div><div class="help">Stored in this browser's local storage.</div></div>
+          <div class="control"><button class="small" id="forget">Forget key</button></div></div>
+      </section>
+    </div>
+  </div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+const $ = (selector) => document.querySelector(selector);
+const KEY_SLOT = "avatar-admin-key:" + location.host;
+let adminKey = "";
+try { adminKey = localStorage.getItem(KEY_SLOT) || ""; } catch (e) {}
+
+function toast(message, isError) {
+  const el = $("#toast");
+  el.textContent = message;
+  el.className = "show" + (isError ? " error" : "");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (el.className = ""), isError ? 5000 : 1800);
+}
+
+async function api(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json", ...(adminKey ? { "X-Admin-Key": adminKey } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.status === 401 || response.status === 403) throw Object.assign(new Error("Admin key rejected."), { auth: true });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `${method} ${path} failed (${response.status})`);
+  return data;
+}
+
+function element(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+}
+
+// One control per setting type — the schema from GET /admin/config is the only source of truth,
+// so a setting added to the server's registry shows up here with no change to this page.
+function controlFor(setting, commit) {
+  if (setting.secret) {
+    const input = element("input", { type: "password", value: "", placeholder: setting.value ? "set — type to replace" : "not set" });
+    input.setAttribute("aria-label", setting.key);
+    input.onchange = () => input.value && commit(input.value);
+    return input;
+  }
+  if (setting.type === "bool") {
+    const input = element("input", { type: "checkbox", checked: !!setting.value });
+    input.setAttribute("aria-label", setting.key);
+    input.onchange = () => commit(input.checked);
+    return element("label", { className: "switch" }, input, element("span"));
+  }
+  if (setting.choices) {
+    const select = element("select", {}, ...setting.choices.map((c) => element("option", { value: c, textContent: c })));
+    select.value = String(setting.value);
+    select.setAttribute("aria-label", setting.key);
+    select.onchange = () => commit(select.value);
+    return select;
+  }
+  const numeric = setting.type === "int" || setting.type === "float";
+  const input = element("input", { type: numeric ? "number" : "text", value: setting.value ?? "" });
+  if (numeric) {
+    input.step = setting.type === "int" ? "1" : "any";
+    if (setting.min !== null) input.min = setting.min;
+    if (setting.max !== null) input.max = setting.max;
+  }
+  input.setAttribute("aria-label", setting.key);
+  input.onchange = () => commit(numeric ? Number(input.value) : input.value);
+  return input;
+}
+
+function renderSettings(schema) {
+  const root = $("#tab-settings");
+  root.replaceChildren();
+  const groups = new Map();
+  for (const setting of schema) groups.set(setting.group, [...(groups.get(setting.group) || []), setting]);
+  for (const [group, settings] of groups) {
+    const card = element("section", { className: "card" }, element("h2", { textContent: group }));
+    for (const setting of settings) {
+      const commit = async (value) => {
+        try {
+          await api("POST", "/admin/config", { [setting.key]: value });
+          toast(`${setting.key} saved`);
+        } catch (error) { toast(error.message, true); }
+        load();
+      };
+      const limits = [setting.min !== null ? `min ${setting.min}` : "", setting.max !== null ? `max ${setting.max}` : ""].filter(Boolean).join(", ");
+      card.append(settingRow({ ...setting, help: setting.help + (limits ? ` (${limits})` : "") }, commit, async () => {
+        try { await api("DELETE", `/admin/config/${setting.key}`); toast(`${setting.key} back to default`); }
+        catch (error) { toast(error.message, true); }
+        load();
+      }));
+    }
+    root.append(card);
+  }
+}
+
+// Rows come from GET /plugin/all in the same shape as /admin/config's schema, so each
+// plugin's settings_schema renders through controlFor() with no per-plugin code.
+function settingRow(setting, commit, reset) {
+  const title = element("div", { className: "key", textContent: setting.key });
+  const controls = element("div", { className: "control" }, controlFor(setting, commit));
+  if (setting.overridden && !setting.secret) {
+    title.append(element("span", { className: "badge", textContent: `default ${setting.default}` }));
+    const button = element("button", { className: "small", textContent: "Reset" });
+    button.onclick = reset;
+    controls.append(button);
+  }
+  return element("div", { className: "row" }, element("div", {}, title), controls,
+    element("div", { className: "help", textContent: setting.help || "" }));
+}
+
+function renderPlugins(plugins) {
+  const on = plugins.filter((p) => p.loaded).length;
+  const card = element("section", { className: "card" }, element("h2", { textContent: `${on} of ${plugins.length} plugins on` }));
+  for (const plugin of plugins.sort((a, b) => a.name.localeCompare(b.name))) {
+    const run = async (method, path, body, done) => {
+      try { await api(method, path, body); toast(done); } catch (error) { toast(error.message, true); }
+      load();
+    };
+    const toggle = element("input", { type: "checkbox", checked: plugin.loaded, disabled: !!plugin.locked_reason });
+    toggle.setAttribute("aria-label", `${plugin.name} on/off`);
+    toggle.onchange = () => run("POST", toggle.checked ? `/plugin/${plugin.name}/enable` : `/plugin/${plugin.name}/disable`, undefined,
+      `${plugin.name} ${toggle.checked ? "on" : "off"} — chat tools apply after a restart`);
+    const commands = (plugin.commands || []).map((c) => "/p." + c.command).join("  ");
+    const block = element("div", { className: "plugin" },
+      element("div", { className: "plugin-head" },
+        element("div", {}, element("span", { className: "key", textContent: plugin.name }), " ",
+          element("span", { className: "muted", textContent: "— " + (plugin.description || "") })),
+        element("label", { className: "switch" }, toggle, element("span"))),
+      element("div", { className: "cmds", textContent: plugin.locked_reason ? `locked: ${plugin.locked_reason}` : (commands || "no commands") }));
+    if (plugin.settings.length) {
+      const details = element("details", {}, element("summary", { textContent: `${plugin.settings.length} settings` }));
+      for (const setting of plugin.settings) {
+        details.append(settingRow(setting,
+          (value) => run("PUT", `/plugin/${plugin.name}/settings`, { [setting.key]: value }, `${setting.key} saved`),
+          () => run("DELETE", `/plugin/${plugin.name}/settings/${setting.key}`, undefined, `${setting.key} back to default`)));
+      }
+      if (!plugin.loaded) details.append(element("p", { className: "muted", textContent: "Turn the plugin on to change these." }));
+      block.append(details);
+    }
+    card.append(block);
+  }
+  card.append(element("p", { className: "muted", textContent:
+    "On/off and settings are saved for this instance only. PLUGINS_ENABLED in the .env still limits what can load. "
+    + "/p.* commands and background tasks switch immediately; chat tools only follow after a restart." }));
+  $("#tab-plugins").replaceChildren(card);
+}
+
+function renderHealth(status) {
+  const chip = (label, value) => {
+    const state = ["ok", "on"].includes(value) ? "ok" : ["offline", "error"].includes(value) ? "bad" : "warn";
+    return element("span", { className: "chip " + state }, label + " ", element("b", { textContent: value }));
+  };
+  $("#character").textContent = status.character_name || "Avatar server";
+  $("#instance").textContent = status.instance && status.instance !== "default" ? status.instance : "";
+  document.title = `${status.character_name || "Avatar"} · Settings`;
+  $("#health").replaceChildren(
+    chip("llm", status.llm), chip("tts", status.tts), chip("stt", status.stt), chip("telegram", status.telegram_notify),
+    chip("brain", (status.memory || {}).brain || "?"), chip("mood", String(Math.round((status.mood || {}).value ?? 0))));
+  const sleep = status.sleep || {};
+  $("#sleep-state").textContent = (sleep.is_sleeping ? "Asleep" : "Awake") + ` — schedule ${sleep.sleep_schedule || "?"}`;
+}
+
+async function load() {
+  try {
+    const [config, status, plugins] = await Promise.all([
+      api("GET", "/admin/config"), api("GET", "/status"), api("GET", "/plugin/all").catch(() => ({ plugins: [] }))]);
+    $("#gate").hidden = true;
+    $("#app").hidden = false;
+    // Settings tagged for another LLM provider (e.g. Claude-only knobs) do nothing here — hide them.
+    renderSettings(config.schema.filter((setting) => setting.applies !== false));
+    renderPlugins(plugins.plugins || []);
+    renderHealth(status);
+  } catch (error) {
+    if (!error.auth) return toast(error.message, true);
+    $("#app").hidden = true;
+    $("#gate").hidden = false;
+    if (adminKey) toast(error.message, true);
+  }
+}
+
+$("#gate-form").onsubmit = (event) => {
+  event.preventDefault();
+  adminKey = $("#gate-key").value.trim();
+  try { localStorage.setItem(KEY_SLOT, adminKey); } catch (e) {}
+  load();
+};
+$("#forget").onclick = () => {
+  adminKey = "";
+  try { localStorage.removeItem(KEY_SLOT); } catch (e) {}
+  load();
+};
+document.querySelectorAll("nav button").forEach((button) => (button.onclick = () => {
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b === button));
+  for (const tab of ["settings", "plugins", "session"]) $("#tab-" + tab).hidden = tab !== button.dataset.tab;
+}));
+document.querySelectorAll("[data-sleep]").forEach((button) => (button.onclick = async () => {
+  try { await api("POST", "/admin/config", { sleep_force: button.dataset.sleep }); toast("Done"); }
+  catch (error) { toast(error.message, true); }
+  load();
+}));
+
+load();
+</script>
+</body>
+</html>

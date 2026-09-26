@@ -26,6 +26,7 @@ MAIN_TOOLS: set[str] = {
     "change_costume",
     "save_memory", "update_memory", "delete_memory",
     "open_gacha", "open_roulette", "spin_roulette", "give_thr",
+    "run_shell",
 }
 
 

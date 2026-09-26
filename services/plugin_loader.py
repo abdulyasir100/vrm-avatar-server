@@ -1,19 +1,96 @@
 """Plugin loader — scans plugins/, reads manifests, registers tools/routes/idle/background."""
 
+import asyncio
 import importlib
 import importlib.util
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable
 
+import config
 from services import tool_registry
 
 logger = logging.getLogger(__name__)
 
 _PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
 _loaded_plugins: dict[str, dict] = {}  # name -> {manifest, handler_module, idle_module, ...}
+
+
+# Per-instance plugin state lives under DATA_DIR, never in manifest.json (which is in git
+# and shared by every instance of this checkout). Paths resolve at call time.
+def _state_path() -> Path:
+    return Path(config.DATA_DIR) / "plugin_state.json"
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _find_plugin_dir(name: str) -> Path | None:
+    """Locate a plugin's folder by its manifest `name` field, not its folder name
+    (folder and manifest name can differ, e.g. plugins/plugin-example/ -> "example").
+
+    Prefers the loaded entry's cached dir; otherwise scans _PLUGINS_DIR. Scanning
+    ~25 small dirs per call is fine — this isn't a hot path.
+    """
+    entry = _loaded_plugins.get(name)
+    if entry:
+        return entry["dir"]
+    if not _PLUGINS_DIR.exists():
+        return None
+    for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
+        if not plugin_dir.is_dir():
+            continue
+        manifest = _read_json(plugin_dir / "manifest.json")
+        if manifest.get("name") == name:
+            return plugin_dir
+    return None
+
+
+def _read_manifest(name: str) -> dict | None:
+    plugin_dir = _find_plugin_dir(name)
+    if plugin_dir is None:
+        return None
+    try:
+        return json.loads((plugin_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+
+def locked_reason(name: str) -> str:
+    return "" if config.plugin_allowed(name) else "not in PLUGINS_ENABLED"
+
+
+def is_enabled(manifest: dict) -> bool:
+    """This instance's choice first, else the manifest's default."""
+    state = _read_json(_state_path())
+    if manifest["name"] in state.get("disabled", []):
+        return False
+    if manifest["name"] in state.get("enabled", []):
+        return True
+    return manifest.get("enabled", True)
+
+
+def _set_state(name: str, on: bool) -> None:
+    state = _read_json(_state_path())
+    enabled, disabled = set(state.get("enabled", [])), set(state.get("disabled", []))
+    (enabled if on else disabled).add(name)
+    (disabled if on else enabled).discard(name)
+    _write_json(_state_path(), {"enabled": sorted(enabled), "disabled": sorted(disabled)})
 
 # Intent prefixes required for plugin tool triggers (main features bypass this)
 # Built dynamically from config.CHARACTER_NICKNAMES + common action words
@@ -76,8 +153,11 @@ def load_all_plugins():
             logger.error(f"[plugin_loader] Failed to parse manifest for {plugin_dir.name}: {e}")
             continue
 
-        if not manifest.get("enabled", True):
+        if not is_enabled(manifest):
             logger.info(f"[plugin_loader] Plugin '{manifest['name']}' is disabled, skipping")
+            continue
+        if not config.plugin_allowed(manifest["name"]):
+            logger.info(f"[plugin_loader] Plugin '{manifest['name']}' not in PLUGINS_ENABLED, skipping")
             continue
 
         try:
@@ -133,12 +213,12 @@ def _load_plugin(plugin_dir: Path, manifest: dict):
             entry["storage"] = storage_mod
             db_file = storage_config.get("file", "data.db")
             # Store in data/ volume (persists across Docker rebuilds)
-            data_dir = Path("data/plugins") / name
+            data_dir = Path(config.PLUGIN_DATA_DIR) / name
             data_dir.mkdir(parents=True, exist_ok=True)
             db_path = data_dir / db_file
             if hasattr(storage_mod, "init"):
                 storage_mod.init(str(db_path))
-                logger.info(f"[plugin_loader] Initialized storage: data/plugins/{name}/{db_file}")
+                logger.info(f"[plugin_loader] Initialized storage: {db_path}")
             # Wire storage into handler and idle modules
             handler_mod = entry.get("handler")
             if handler_mod and hasattr(handler_mod, "set_storage"):
@@ -220,34 +300,80 @@ def get_idle_category_owners() -> dict[str, str]:
 
 
 def enable_plugin(name: str) -> bool:
-    """Enable a plugin by updating its manifest."""
-    plugin_dir = _PLUGINS_DIR / name
-    manifest_path = plugin_dir / "manifest.json"
-    if not manifest_path.exists():
+    """Turn a plugin on for this instance and load it live. Load errors propagate and
+    leave the state untouched.
+
+    Re-enabling a plugin that isn't currently loaded re-imports its handler module
+    from scratch, so any in-memory module state (caches, counters, etc.) resets.
+    """
+    manifest = _read_manifest(name)
+    if manifest is None:
         return False
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["enabled"] = True
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if name not in _loaded_plugins:
+        plugin_dir = _find_plugin_dir(name)
         _load_plugin(plugin_dir, manifest)
+    _set_state(name, True)
     return True
 
 
-def disable_plugin(name: str) -> bool:
-    """Disable a plugin by updating its manifest."""
-    plugin_dir = _PLUGINS_DIR / name
-    manifest_path = plugin_dir / "manifest.json"
-    if not manifest_path.exists():
+async def disable_plugin(name: str) -> bool:
+    """Turn a plugin off for this instance and unregister its tools.
+
+    Calls the handler module's shutdown() first, if it defines one (sync or async —
+    same convention as main.py's app-shutdown hook), so it can flush state. An
+    exception there is logged, never raised: the toggle itself must always succeed.
+    """
+    if _read_manifest(name) is None:
         return False
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["enabled"] = False
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    # Unregister tools
     if name in _loaded_plugins:
+        handler = _loaded_plugins[name].get("handler")
+        shutdown_fn = getattr(handler, "shutdown", None)
+        if callable(shutdown_fn):
+            try:
+                result = shutdown_fn()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.warning(f"[plugin_loader] disable {name}: shutdown() failed: {e!r}")
         for tool_def in _loaded_plugins[name]["manifest"].get("tools", []):
             tool_registry.unregister(tool_def["name"])
         del _loaded_plugins[name]
+    _set_state(name, False)
     return True
+
+
+def list_all() -> list[dict]:
+    """Every plugin on disk (loaded or not) for the settings page.
+
+    A manifest whose settings_schema can't be read (e.g. a bad default) still shows
+    up with its other fields — only that plugin's row loses its settings.
+    """
+    rows = []
+    seen: set[str] = set()
+    for plugin_dir in sorted(_PLUGINS_DIR.iterdir()) if _PLUGINS_DIR.exists() else []:
+        if not plugin_dir.is_dir():
+            continue
+        manifest = _read_json(plugin_dir / "manifest.json")
+        name = manifest.get("name")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        row = {
+            "name": name,
+            "description": manifest.get("description", ""),
+            "enabled": is_enabled(manifest),
+            "loaded": name in _loaded_plugins,
+            "locked_reason": locked_reason(name),
+            "commands": manifest.get("telegram_commands", []),
+        }
+        try:
+            row["settings"] = get_settings(name)
+        except Exception as e:
+            logger.warning(f"[plugin_loader] settings failed for {name}: {e!r}")
+            row["settings"] = []
+            row["error"] = str(e)
+        rows.append(row)
+    return rows
 
 
 def get_plugin_triggers() -> list[tuple[str, list[str], bool]]:
@@ -352,6 +478,23 @@ def get_chat_context_blocks() -> list[str]:
     return blocks
 
 
+def notify_turn_end(turn: dict) -> None:
+    """Tell every plugin whose handler defines on_turn_end(turn) that a chat turn finished.
+
+    turn = {message, reply, context, user_name, tool, ok}. The generic hook for plugins that
+    learn from what happened (the skills plugin records tasks here). Never raises.
+    """
+    for name, entry in _loaded_plugins.items():
+        handler_mod = entry.get("handler")
+        fn = getattr(handler_mod, "on_turn_end", None) if handler_mod else None
+        if not fn:
+            continue
+        try:
+            fn(turn)
+        except Exception as e:
+            logger.warning(f"[plugin_loader] on_turn_end failed for {name}: {e!r}")
+
+
 async def handle_callback(plugin_name: str, action: str, item_id: str) -> dict | None:
     """Handle a Telegram inline button callback for a plugin."""
     entry = _loaded_plugins.get(plugin_name)
@@ -361,3 +504,155 @@ async def handle_callback(plugin_name: str, action: str, item_id: str) -> dict |
     if handler_mod and hasattr(handler_mod, "handle_callback"):
         return await handler_mod.handle_callback(action, item_id)
     return None
+
+
+# ─── plugin settings ────────────────────────────────────────────────────────
+# Declared in manifest.settings_schema. A plugin whose storage module has
+# get_setting/set_setting keeps them in its own SQLite settings table (so its chat
+# commands and this API edit one value); every other plugin uses
+# DATA_DIR/plugin_settings.json. Values are read at call time, so changes are live.
+
+_TYPES = {"int": "int", "integer": "int", "float": "float", "number": "float",
+          "bool": "bool", "boolean": "bool"}
+_EMPTY = {"int": 0, "float": 0.0, "bool": False, "str": ""}
+
+
+def _settings_path() -> Path:
+    return Path(config.DATA_DIR) / "plugin_settings.json"
+
+
+def _schema(name: str) -> dict:
+    manifest = (_loaded_plugins.get(name) or {}).get("manifest") or _read_manifest(name) or {}
+    return manifest.get("settings_schema", {}) or {}
+
+
+def _spec(name: str, key: str) -> dict:
+    spec = _schema(name).get(key)
+    if spec is None:
+        raise KeyError(f"{name} has no setting {key!r}")
+    return spec
+
+
+def _type(spec: dict) -> str:
+    return _TYPES.get(str(spec.get("type", "")).lower(), "str")
+
+
+def _coerce(spec: dict, raw: Any) -> Any:
+    kind = _type(spec)
+    if kind == "bool":
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"expected true/false, got {raw!r}")
+    if kind in ("int", "float"):
+        if isinstance(raw, bool):
+            raise ValueError(f"expected a number, got {raw!r}")
+        try:
+            return int(str(raw).strip()) if kind == "int" else float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"expected {kind}, got {raw!r}") from None
+    return "" if raw is None else str(raw)
+
+
+def _default(spec: dict) -> Any:
+    if spec.get("default") is None:
+        return _EMPTY[_type(spec)]
+    return _coerce(spec, spec["default"])
+
+
+def _store(name: str):
+    storage = (_loaded_plugins.get(name) or {}).get("storage")
+    if storage and hasattr(storage, "get_setting") and hasattr(storage, "set_setting"):
+        return storage
+    return None
+
+
+def _raw(name: str, key: str) -> Any:
+    store = _store(name)
+    if store:
+        return store.get_setting(key)
+    return _read_json(_settings_path()).get(name, {}).get(key)
+
+
+def get_setting(name: str, key: str) -> Any:
+    """The typed value of a plugin setting for this instance (override, else manifest default)."""
+    spec = _spec(name, key)
+    raw = _raw(name, key)
+    if raw is None:
+        return _default(spec)
+    try:
+        return _coerce(spec, raw)
+    except ValueError:
+        logger.warning(f"[plugin_loader] {name}.{key}: unparseable stored value {raw!r}, using default")
+        return _default(spec)
+
+
+def _write(name: str, key: str, value: Any) -> None:
+    store = _store(name)
+    if store:
+        store.set_setting(key, ("1" if value else "0") if isinstance(value, bool) else str(value))
+        return
+    data = _read_json(_settings_path())
+    section = data.get(name) if isinstance(data.get(name), dict) else {}
+    section[key] = value
+    data[name] = section
+    _write_json(_settings_path(), data)
+
+
+def validate_setting(name: str, key: str, value: Any) -> Any:
+    """Typed value if valid for the schema, else ValueError/KeyError. Writes nothing."""
+    spec = _spec(name, key)
+    typed = _coerce(spec, value)
+    options = spec.get("options")
+    if options and typed not in options:
+        raise ValueError(f"{key} must be one of {options}")
+    return typed
+
+
+def set_setting(name: str, key: str, value: Any) -> Any:
+    """Validate against the schema and store. Only for loaded plugins."""
+    if name not in _loaded_plugins:
+        _spec(name, key)  # an unknown key still reports KeyError first
+        raise PermissionError(f"enable {name} before changing its settings")
+    typed = validate_setting(name, key, value)
+    _write(name, key, typed)
+    return typed
+
+
+def reset_setting(name: str, key: str) -> Any:
+    spec = _spec(name, key)
+    if name not in _loaded_plugins:
+        raise PermissionError(f"enable {name} before changing its settings")
+    default = _default(spec)
+    if _store(name):
+        _write(name, key, default)
+    else:
+        data = _read_json(_settings_path())
+        if isinstance(data.get(name), dict) and key in data[name]:
+            del data[name][key]
+            _write_json(_settings_path(), data)
+    return default
+
+
+def get_settings(name: str) -> list[dict]:
+    """Rows in the same shape as GET /admin/config's schema, so the page reuses one renderer."""
+    rows = []
+    for key, spec in _schema(name).items():
+        value, default, secret = get_setting(name, key), _default(spec), bool(spec.get("secret"))
+        rows.append({
+            "key": key,
+            "type": _type(spec),
+            "help": spec.get("label") or spec.get("description", ""),
+            "choices": spec.get("options"),
+            "min": spec.get("min"),
+            "max": spec.get("max"),
+            "default": "" if secret else default,
+            "value": ("set" if value else "") if secret else value,
+            "overridden": value != default,
+            "secret": secret,
+        })
+    return rows
